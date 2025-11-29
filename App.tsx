@@ -26,6 +26,8 @@ import {
   useMicrophonePermission,
 } from 'react-native-vision-camera';
 import Video from 'react-native-video';
+import RNFS from 'react-native-fs';
+import { CameraRoll } from '@react-native-camera-roll/camera-roll';
 
 function App(): React.JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
@@ -84,11 +86,40 @@ function App(): React.JSX.Element {
   };
 
   // Callback: Recording Stopped
-  const onRecordingStopped = (videoPath: string) => {
+  const onRecordingStopped = async (videoPath: string) => {
     console.log('Recording stopped callback triggered');
     console.log('Video saved at:', videoPath);
-    setRecordingStatus('Recording saved successfully!');
-    setRecordedVideoPath(videoPath);
+
+    try {
+      // Generate filename with timestamp and MP4 extension
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('.')[0];
+      const filename = `VID_${timestamp}.mp4`;
+
+      // Use Movies directory for gallery visibility
+      const destPath = `${RNFS.ExternalStorageDirectoryPath}/Movies/${filename}`;
+
+      // Move file from cache to Movies directory
+      await RNFS.moveFile(videoPath, destPath);
+      console.log('Video moved to:', destPath);
+
+      // Add to Media Store so Gallery apps can see it
+      try {
+        await CameraRoll.save(`file://${destPath}`, { type: 'video' });
+        console.log('Video added to gallery');
+      } catch (err) {
+        console.warn('Failed to add to gallery, but file saved:', err);
+      }
+
+      setRecordingStatus('Recording saved successfully!');
+      setRecordedVideoPath(destPath);
+      Alert.alert('Success', `Video saved to Gallery: ${filename}`);
+    } catch (error: any) {
+      console.error('Error saving to gallery:', error);
+      setRecordingStatus('Recording saved to cache only');
+      setRecordedVideoPath(videoPath);
+      Alert.alert('Warning', 'Video saved but may not appear in Gallery');
+    }
+
     setIsRecording(false);
 
     // Stop timer
