@@ -246,7 +246,8 @@ function App(): React.JSX.Element {
     }
   };
 
-  // Merge segments using binary concatenation
+  // Merge segments - WORKAROUND: Save first segment only
+  // TODO: Implement proper merging with FFmpeg or native code
   const mergeAndSaveSegments = async (segments: string[]) => {
     if (segments.length === 0) {
       Alert.alert('Error', 'No segments to merge');
@@ -258,20 +259,11 @@ function App(): React.JSX.Element {
       const filename = `VID_${timestamp}.mp4`;
       const outputPath = `${RNFS.ExternalStorageDirectoryPath}/Movies/${filename}`;
 
-      // Simple approach: Use first segment as base, append others
-      // Note: This is a workaround. Proper merging needs native code or FFmpeg
-      if (segments.length === 1) {
-        await RNFS.moveFile(segments[0], outputPath);
-      } else {
-        // Copy first segment
-        await RNFS.copyFile(segments[0], outputPath);
-
-        // Append other segments (binary concat - may not work perfectly for MP4)
-        for (let i = 1; i < segments.length; i++) {
-          const segmentData = await RNFS.readFile(segments[i], 'base64');
-          await RNFS.appendFile(outputPath, segmentData, 'base64');
-        }
-      }
+      // WORKAROUND: Binary concatenation doesn't work for MP4
+      // For now, save only the first segment
+      // Proper solution needs FFmpeg or native MP4 muxer
+      console.log(`Saving first segment out of ${segments.length} segments`);
+      await RNFS.moveFile(segments[0], outputPath);
 
       // Add to gallery
       try {
@@ -282,12 +274,21 @@ function App(): React.JSX.Element {
       }
 
       setRecordedVideoPath(outputPath);
-      setRecordingStatus('Video saved successfully!');
-      Alert.alert('Success', `Saved ${segments.length} segments (${segments.length}s) to Gallery`);
+      setRecordingStatus('Video saved!');
+
+      // Notify user about limitation
+      if (segments.length > 1) {
+        Alert.alert(
+          'Video Saved',
+          `Note: Saved first segment only. Full merging requires FFmpeg.\nSegments: ${segments.length}, Duration: ~${segments.length * 2}s`,
+        );
+      } else {
+        Alert.alert('Success', 'Video saved to Gallery');
+      }
     } catch (error: any) {
-      console.error('Merge error:', error);
-      setRecordingStatus('Error merging videos');
-      Alert.alert('Error', 'Failed to merge videos');
+      console.error('Save error:', error);
+      setRecordingStatus('Error saving video');
+      Alert.alert('Error', 'Failed to save video');
     }
   };
 
