@@ -433,13 +433,14 @@ function App(): React.JSX.Element {
                 <View style={styles.pickerContainer}>
                   <Picker
                     selectedValue={preBufferDuration}
-                    onValueChange={setPreBufferDuration}
+                    onValueChange={(value) => setPreBufferDuration(value)}
                     style={styles.picker}
+                    mode="dropdown"
                     dropdownIconColor="#ffffff"
                     enabled={!isBuffering && !isCapturing}>
-                    <Picker.Item label="3s" value={3} />
-                    <Picker.Item label="5s" value={5} />
-                    <Picker.Item label="10s" value={10} />
+                    <Picker.Item label="3 seconds" value={3} color="#ffffff" />
+                    <Picker.Item label="5 seconds" value={5} color="#ffffff" />
+                    <Picker.Item label="10 seconds" value={10} color="#ffffff" />
                   </Picker>
                 </View>
               </View>
@@ -448,13 +449,14 @@ function App(): React.JSX.Element {
                 <View style={styles.pickerContainer}>
                   <Picker
                     selectedValue={postBufferDuration}
-                    onValueChange={setPostBufferDuration}
+                    onValueChange={(value) => setPostBufferDuration(value)}
                     style={styles.picker}
+                    mode="dropdown"
                     dropdownIconColor="#ffffff"
                     enabled={!isBuffering && !isCapturing}>
-                    <Picker.Item label="3s" value={3} />
-                    <Picker.Item label="5s" value={5} />
-                    <Picker.Item label="10s" value={10} />
+                    <Picker.Item label="3 seconds" value={3} color="#ffffff" />
+                    <Picker.Item label="5 seconds" value={5} color="#ffffff" />
+                    <Picker.Item label="10 seconds" value={10} color="#ffffff" />
                   </Picker>
                 </View>
               </View>
