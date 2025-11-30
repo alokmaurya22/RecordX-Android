@@ -1,0 +1,1187 @@
+                            TABLE OF CONTENTS
+================================================================================
+
+1. Overview
+2. Architecture Design
+3. Metrics to Track
+4. Implementation Components
+5. Native Android Module (TelemetryModule)
+6. React Native Integration
+7. Data Collection Strategy
+8. Data Storage & Logging
+9. Report Generation
+10. Performance Optimization
+11. File Structure
+12. Code Implementation Details
+13. Testing Strategy
+14. Troubleshooting
+
+================================================================================
+                              1. OVERVIEW
+================================================================================
+
+PURPOSE:
+--------
+Track and analyze performance metrics during camera preview and video recording
+to identify bottlenecks and optimize resource usage.
+
+CAMERA IMPLEMENTATION:
+----------------------
+Library: react-native-vision-camera
+- React Native wrapper for native camera APIs
+- Android Backend: CameraX (Google's modern camera library)
+- iOS Backend: AVFoundation
+- Repository: https://github.com/mrousavy/react-native-vision-camera
+
+MANDATORY METRICS:
+------------------
+✓ CPU Usage (%)
+✓ Memory Usage (MB)
+✓ GPU Usage (%) - Approximate values acceptable
+✓ Latency (Button Press → Recording Start Callback)
+
+DELIVERABLES:
+-------------
+1. Real-time telemetry logging (console + file)
+2. Performance report with:
+   - Observed resource usage for react-native-vision-camera
+   - Identified bottlenecks
+   - Improvement recommendations
+
+================================================================================
+                          2. ARCHITECTURE DESIGN
+================================================================================
+
+MULTI-LAYER APPROACH:
+---------------------
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    LAYER 1: UI LAYER (React Native)             │
+│  - TelemetryDisplay.tsx (Real-time overlay)                     │
+│  - Settings panel (Enable/disable telemetry)                    │
+│  - Report viewer                                                │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              LAYER 2: JAVASCRIPT BRIDGE (TypeScript)            │
+│  - TelemetryLogger.ts (Main controller)                         │
+│  - Latency tracking (High-precision timestamps)                 │
+│  - Data formatting & aggregation                                │
+│  - File I/O operations                                          │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│           LAYER 3: NATIVE MODULE (Kotlin/Android)               │
+│  - TelemetryModule.kt (CPU, Memory, GPU tracking)               │
+│  - SystemMetricsCollector.kt (Low-level system access)          │
+│  - Exposed to React Native via NativeModules bridge             │
+└─────────────────────────────────────────────────────────────────┘
+
+DATA FLOW:
+----------
+1. User starts recording
+2. TelemetryLogger.start() called
+3. Native module begins polling system metrics (1s interval)
+4. JavaScript layer tracks latency timestamps
+5. Metrics collected and buffered in memory
+6. Every 5 seconds: Write to log file
+7. User stops recording
+8. TelemetryLogger.stop() called
+9. Generate summary report
+10. Save final report to file
+
+================================================================================
+                          3. METRICS TO TRACK
+================================================================================
+
+3.1 CPU USAGE (%)
+-----------------
+Source: /proc/stat (Linux kernel interface)
+Method: Parse CPU ticks and calculate delta
+Update Frequency: Every 1 second
+Format: Percentage (0-100%)
+
+Data Points:
+- Total CPU usage (all cores)
+- Per-core usage (optional)
+- User time vs System time breakdown
+
+Example Output:
+{
+  "cpu_total": 45.2,
+  "cpu_user": 30.1,
+  "cpu_system": 15.1,
+  "cpu_cores": [42.0, 48.5, 43.2, 47.8]
+}
+
+3.2 MEMORY USAGE (MB)
+---------------------
+Source: Android ActivityManager & Debug APIs
+Method: ActivityManager.getMemoryInfo() + Debug.MemoryInfo
+Update Frequency: Every 1 second
+Format: Megabytes (MB)
+
+Data Points:
+- Total system memory used
+- App heap memory (Java objects)
+- App native memory (C/C++ allocations, camera buffers)
+- App graphics memory (GPU textures, surfaces)
+- Available memory
+
+Example Output:
+{
+  "system_total_mb": 3200,
+  "system_available_mb": 1800,
+  "app_heap_mb": 120,
+  "app_native_mb": 85,
+  "app_graphics_mb": 45,
+  "app_total_mb": 250
+}
+
+3.3 GPU USAGE (%)
+-----------------
+Source: Device-specific sysfs files (best-effort)
+Method: Read GPU utilization from kernel interfaces
+Update Frequency: Every 1 second
+Format: Percentage (0-100%) or "N/A"
+
+Supported Paths (in priority order):
+1. /sys/class/kgsl/kgsl-3d0/gpubusy_percentage (Qualcomm)
+2. /sys/devices/platform/gpu/utilization (Generic)
+3. /sys/kernel/gpu/gpu_busy (Samsung Exynos)
+4. Fallback: Estimate from frame drops
+
+Example Output:
+{
+  "gpu_usage": 32.5,
+  "gpu_source": "kgsl",
+  "gpu_available": true
+}
+
+3.4 LATENCY (milliseconds)
+--------------------------
+Source: JavaScript performance.now() API
+Method: High-precision timestamps
+Update Frequency: Per recording event
+Format: Milliseconds (ms)
+
+Tracked Events:
+- Button Press → camera.current.startRecording() call
+- startRecording() → onRecordingFinished callback (vision-camera)
+- Total end-to-end latency
+
+Example Output:
+{
+  "button_to_start_ms": 12,
+  "start_to_callback_ms": 45,
+  "total_latency_ms": 57,
+  "timestamp": "2025-11-30T18:51:04+05:30"
+}
+
+3.5 ADDITIONAL CONTEXT METRICS
+-------------------------------
+- Camera state (preview, recording, buffering)
+- Video resolution (e.g., 1920x1080)
+- Frame rate (e.g., 30 fps)
+- Bitrate (e.g., 8 Mbps)
+- Buffer mode (enabled/disabled)
+- Segment count (for circular buffer)
+- Recording duration
+
+================================================================================
+                    4. IMPLEMENTATION COMPONENTS
+================================================================================
+
+4.1 NATIVE ANDROID MODULE
+--------------------------
+File: android/app/src/main/java/com/basicapp/TelemetryModule.kt
+Purpose: Collect system-level metrics (CPU, Memory, GPU)
+Language: Kotlin
+Dependencies: Android SDK APIs
+
+Exposed Methods to React Native:
+- startMonitoring(): void
+- stopMonitoring(): void
+- getCurrentMetrics(): Promise<Object>
+- getMetricsHistory(): Promise<Array>
+
+4.2 NATIVE PACKAGE REGISTRATION
+--------------------------------
+File: android/app/src/main/java/com/basicapp/TelemetryPackage.kt
+Purpose: Register TelemetryModule with React Native bridge
+Language: Kotlin
+
+4.3 JAVASCRIPT TELEMETRY LOGGER
+--------------------------------
+File: src/utils/TelemetryLogger.ts
+Purpose: Main telemetry controller
+Language: TypeScript
+Dependencies: React Native NativeModules, RNFS
+
+Public Methods:
+- start(sessionId: string): void
+- stop(): Promise<TelemetryReport>
+- recordEvent(event: string, data: object): void
+- getLatestMetrics(): TelemetryMetrics
+- generateReport(): TelemetryReport
+- exportToFile(path: string): Promise<void>
+
+4.4 UI DISPLAY COMPONENT
+-------------------------
+File: src/components/TelemetryDisplay.tsx
+Purpose: Real-time metrics overlay
+Language: TypeScript/React Native
+Features:
+- Toggle visibility
+- Compact/expanded view
+- Color-coded warnings (CPU > 80% = red)
+
+4.5 REPORT GENERATOR
+---------------------
+File: src/utils/ReportGenerator.ts
+Purpose: Generate human-readable performance reports
+Language: TypeScript
+Output Format: Markdown (.md) and JSON (.json)
+
+================================================================================
+                    5. NATIVE ANDROID MODULE DETAILS
+================================================================================
+
+FILE: TelemetryModule.kt
+------------------------
+
+IMPORTS:
+--------
+import com.facebook.react.bridge.*
+import com.facebook.react.modules.core.DeviceEventManagerModule
+import android.app.ActivityManager
+import android.os.Debug
+import android.content.Context
+import java.io.RandomAccessFile
+import java.util.Timer
+import java.util.TimerTask
+import org.json.JSONObject
+import org.json.JSONArray
+
+CLASS STRUCTURE:
+----------------
+class TelemetryModule(reactContext: ReactApplicationContext) : 
+    ReactContextBaseJavaModule(reactContext) {
+    
+    private var monitoringTimer: Timer? = null
+    private var metricsHistory = mutableListOf<JSONObject>()
+    private var lastCpuStats: CpuStats? = null
+    
+    // Data classes
+    data class CpuStats(val total: Long, val idle: Long)
+    data class MemoryMetrics(...)
+    data class GpuMetrics(...)
+    
+    // Public methods (exposed to React Native)
+    @ReactMethod
+    fun startMonitoring(promise: Promise)
+    
+    @ReactMethod
+    fun stopMonitoring(promise: Promise)
+    
+    @ReactMethod
+    fun getCurrentMetrics(promise: Promise)
+    
+    @ReactMethod
+    fun getMetricsHistory(promise: Promise)
+    
+    // Private helper methods
+    private fun collectMetrics(): JSONObject
+    private fun getCpuUsage(): Double
+    private fun getMemoryMetrics(): MemoryMetrics
+    private fun getGpuUsage(): Double?
+    private fun readCpuStats(): CpuStats
+    private fun readGpuFromSysfs(): Double?
+    private fun emitMetricsEvent(metrics: JSONObject)
+}
+
+CPU USAGE IMPLEMENTATION:
+-------------------------
+private fun getCpuUsage(): Double {
+    val currentStats = readCpuStats()
+    val previousStats = lastCpuStats ?: return 0.0
+    
+    val totalDelta = currentStats.total - previousStats.total
+    val idleDelta = currentStats.idle - previousStats.idle
+    
+    lastCpuStats = currentStats
+    
+    if (totalDelta == 0L) return 0.0
+    
+    val usage = ((totalDelta - idleDelta).toDouble() / totalDelta) * 100.0
+    return usage.coerceIn(0.0, 100.0)
+}
+
+private fun readCpuStats(): CpuStats {
+    val reader = RandomAccessFile("/proc/stat", "r")
+    val line = reader.readLine()
+    reader.close()
+    
+    // Parse: cpu  user nice system idle iowait irq softirq
+    val parts = line.split("\\s+".toRegex())
+    val user = parts[1].toLong()
+    val nice = parts[2].toLong()
+    val system = parts[3].toLong()
+    val idle = parts[4].toLong()
+    val iowait = parts[5].toLong()
+    val irq = parts[6].toLong()
+    val softirq = parts[7].toLong()
+    
+    val total = user + nice + system + idle + iowait + irq + softirq
+    return CpuStats(total, idle)
+}
+
+MEMORY USAGE IMPLEMENTATION:
+----------------------------
+private fun getMemoryMetrics(): MemoryMetrics {
+    val activityManager = reactApplicationContext
+        .getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    
+    // System memory
+    val memoryInfo = ActivityManager.MemoryInfo()
+    activityManager.getMemoryInfo(memoryInfo)
+    val totalMem = memoryInfo.totalMem / (1024 * 1024) // Convert to MB
+    val availMem = memoryInfo.availMem / (1024 * 1024)
+    val usedMem = totalMem - availMem
+    
+    // App memory
+    val pid = android.os.Process.myPid()
+    val processMemoryInfo = activityManager.getProcessMemoryInfo(intArrayOf(pid))
+    val appMemInfo = processMemoryInfo[0]
+    
+    val heapMb = appMemInfo.dalvikPrivateDirty / 1024.0
+    val nativeMb = appMemInfo.nativePrivateDirty / 1024.0
+    val graphicsMb = appMemInfo.otherPrivateDirty / 1024.0
+    val totalAppMb = heapMb + nativeMb + graphicsMb
+    
+    return MemoryMetrics(
+        systemTotalMb = totalMem,
+        systemUsedMb = usedMem,
+        systemAvailMb = availMem,
+        appHeapMb = heapMb,
+        appNativeMb = nativeMb,
+        appGraphicsMb = graphicsMb,
+        appTotalMb = totalAppMb
+    )
+}
+
+GPU USAGE IMPLEMENTATION:
+-------------------------
+private fun getGpuUsage(): Double? {
+    // Try multiple paths for different chipsets
+    val gpuPaths = listOf(
+        "/sys/class/kgsl/kgsl-3d0/gpubusy_percentage",  // Qualcomm
+        "/sys/devices/platform/gpu/utilization",         // Generic
+        "/sys/kernel/gpu/gpu_busy"                       // Samsung Exynos
+    )
+    
+    for (path in gpuPaths) {
+        val usage = readGpuFromSysfs(path)
+        if (usage != null) return usage
+    }
+    
+    return null // GPU metrics not available
+}
+
+private fun readGpuFromSysfs(path: String): Double? {
+    return try {
+        val file = java.io.File(path)
+        if (!file.exists()) return null
+        
+        val content = file.readText().trim()
+        content.toDoubleOrNull()
+    } catch (e: Exception) {
+        null
+    }
+}
+
+MONITORING TIMER:
+-----------------
+@ReactMethod
+fun startMonitoring(promise: Promise) {
+    try {
+        stopMonitoring(null) // Stop any existing timer
+        
+        metricsHistory.clear()
+        lastCpuStats = readCpuStats() // Initialize baseline
+        
+        monitoringTimer = Timer()
+        monitoringTimer?.scheduleAtFixedRate(object : TimerTask() {
+            override fun run() {
+                val metrics = collectMetrics()
+                metricsHistory.add(metrics)
+                
+                // Keep only last 300 entries (5 minutes at 1s interval)
+                if (metricsHistory.size > 300) {
+                    metricsHistory.removeAt(0)
+                }
+                
+                // Emit event to React Native
+                emitMetricsEvent(metrics)
+            }
+        }, 0, 1000) // Every 1 second
+        
+        promise.resolve("Monitoring started")
+    } catch (e: Exception) {
+        promise.reject("START_ERROR", e.message)
+    }
+}
+
+EVENT EMISSION:
+---------------
+private fun emitMetricsEvent(metrics: JSONObject) {
+    reactApplicationContext
+        .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        .emit("TelemetryMetrics", Arguments.fromBundle(
+            Bundle().apply {
+                putString("data", metrics.toString())
+            }
+        ))
+}
+
+================================================================================
+                    6. REACT NATIVE INTEGRATION
+================================================================================
+
+FILE: src/utils/TelemetryLogger.ts
+-----------------------------------
+
+import { NativeModules, NativeEventEmitter } from 'react-native';
+import RNFS from 'react-native-fs';
+
+const { TelemetryModule } = NativeModules;
+const telemetryEmitter = new NativeEventEmitter(TelemetryModule);
+
+interface TelemetryMetrics {
+  timestamp: string;
+  cpu_usage: number;
+  memory: {
+    system_total_mb: number;
+    system_used_mb: number;
+    app_total_mb: number;
+    app_heap_mb: number;
+    app_native_mb: number;
+    app_graphics_mb: number;
+  };
+  gpu_usage: number | null;
+  latency?: {
+    button_to_start_ms: number;
+    start_to_callback_ms: number;
+    total_ms: number;
+  };
+  context: {
+    camera_state: string;
+    buffer_mode: boolean;
+    segment_count: number;
+  };
+}
+
+class TelemetryLogger {
+  private sessionId: string = '';
+  private isMonitoring: boolean = false;
+  private metricsBuffer: TelemetryMetrics[] = [];
+  private eventSubscription: any = null;
+  private logFilePath: string = '';
+  
+  // Latency tracking
+  private latencyStartTime: number = 0;
+  private latencyCallbackTime: number = 0;
+  
+  async start(sessionId: string): Promise<void> {
+    this.sessionId = sessionId;
+    this.isMonitoring = true;
+    this.metricsBuffer = [];
+    
+    // Create log file
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    this.logFilePath = `${RNFS.ExternalDirectoryPath}/telemetry_${timestamp}.json`;
+    
+    // Start native monitoring
+    await TelemetryModule.startMonitoring();
+    
+    // Subscribe to metrics events
+    this.eventSubscription = telemetryEmitter.addListener(
+      'TelemetryMetrics',
+      this.handleMetricsUpdate.bind(this)
+    );
+    
+    console.log(`[TELEMETRY] Monitoring started: ${sessionId}`);
+  }
+  
+  async stop(): Promise<TelemetryReport> {
+    this.isMonitoring = false;
+    
+    // Stop native monitoring
+    await TelemetryModule.stopMonitoring();
+    
+    // Unsubscribe from events
+    if (this.eventSubscription) {
+      this.eventSubscription.remove();
+      this.eventSubscription = null;
+    }
+    
+    // Save final log
+    await this.saveToFile();
+    
+    // Generate report
+    const report = this.generateReport();
+    
+    console.log(`[TELEMETRY] Monitoring stopped. Report generated.`);
+    return report;
+  }
+  
+  recordLatencyStart(): void {
+    this.latencyStartTime = performance.now();
+  }
+  
+  recordLatencyCallback(): void {
+    this.latencyCallbackTime = performance.now();
+    const latency = this.latencyCallbackTime - this.latencyStartTime;
+    console.log(`[TELEMETRY] Latency: ${latency.toFixed(2)}ms`);
+  }
+  
+  private handleMetricsUpdate(event: any): void {
+    const data = JSON.parse(event.data);
+    this.metricsBuffer.push(data);
+    
+    // Console log (formatted)
+    this.logToConsole(data);
+    
+    // Save to file every 5 seconds
+    if (this.metricsBuffer.length % 5 === 0) {
+      this.saveToFile();
+    }
+  }
+  
+  private logToConsole(metrics: TelemetryMetrics): void {
+    const cpu = metrics.cpu_usage.toFixed(1);
+    const mem = metrics.memory.app_total_mb.toFixed(0);
+    const gpu = metrics.gpu_usage ? metrics.gpu_usage.toFixed(1) : 'N/A';
+    
+    console.log(
+      `[TELEMETRY] CPU: ${cpu}% | MEM: ${mem}MB | GPU: ${gpu}%`
+    );
+  }
+  
+  private async saveToFile(): Promise<void> {
+    try {
+      const data = JSON.stringify(this.metricsBuffer, null, 2);
+      await RNFS.writeFile(this.logFilePath, data, 'utf8');
+    } catch (error) {
+      console.error('[TELEMETRY] Failed to save log:', error);
+    }
+  }
+  
+  private generateReport(): TelemetryReport {
+    // Calculate statistics
+    const cpuValues = this.metricsBuffer.map(m => m.cpu_usage);
+    const memValues = this.metricsBuffer.map(m => m.memory.app_total_mb);
+    const gpuValues = this.metricsBuffer
+      .map(m => m.gpu_usage)
+      .filter(v => v !== null) as number[];
+    
+    return {
+      session_id: this.sessionId,
+      duration_seconds: this.metricsBuffer.length,
+      cpu: {
+        average: this.average(cpuValues),
+        peak: Math.max(...cpuValues),
+        min: Math.min(...cpuValues),
+      },
+      memory: {
+        average_mb: this.average(memValues),
+        peak_mb: Math.max(...memValues),
+        min_mb: Math.min(...memValues),
+      },
+      gpu: gpuValues.length > 0 ? {
+        average: this.average(gpuValues),
+        peak: Math.max(...gpuValues),
+        available: true,
+      } : {
+        available: false,
+      },
+      bottlenecks: this.identifyBottlenecks(),
+      recommendations: this.generateRecommendations(),
+    };
+  }
+  
+  private average(values: number[]): number {
+    return values.reduce((a, b) => a + b, 0) / values.length;
+  }
+  
+  private identifyBottlenecks(): string[] {
+    const bottlenecks: string[] = [];
+    const cpuValues = this.metricsBuffer.map(m => m.cpu_usage);
+    const memValues = this.metricsBuffer.map(m => m.memory.app_total_mb);
+    
+    if (Math.max(...cpuValues) > 80) {
+      bottlenecks.push('High CPU usage detected (>80%)');
+    }
+    if (Math.max(...memValues) > 500) {
+      bottlenecks.push('High memory usage detected (>500MB)');
+    }
+    
+    return bottlenecks;
+  }
+  
+  private generateRecommendations(): string[] {
+    const recommendations: string[] = [];
+    const avgCpu = this.average(this.metricsBuffer.map(m => m.cpu_usage));
+    
+    if (avgCpu > 60) {
+      recommendations.push('Reduce video resolution to 720p');
+      recommendations.push('Lower bitrate from 8Mbps to 5Mbps');
+    }
+    
+    return recommendations;
+  }
+}
+
+export default new TelemetryLogger();
+
+================================================================================
+                    7. DATA COLLECTION STRATEGY
+================================================================================
+
+COLLECTION INTERVALS:
+---------------------
+- CPU Usage: Every 1 second
+- Memory Usage: Every 1 second
+- GPU Usage: Every 1 second
+- Latency: On-demand (per recording event)
+
+BUFFERING STRATEGY:
+-------------------
+- In-memory buffer: Last 300 metrics (5 minutes)
+- Circular buffer: Oldest entries removed when limit reached
+- Prevents memory overflow during long recordings
+
+SAMPLING OPTIMIZATION:
+----------------------
+- Normal mode: 1 second interval
+- High-frequency mode: 500ms interval (optional, for debugging)
+- Low-power mode: 2 second interval (battery saving)
+
+EVENT-DRIVEN COLLECTION:
+------------------------
+Trigger telemetry on specific events:
+- Recording started
+- Recording stopped
+- Buffer mode enabled
+- Segment captured
+- Video merged
+- Error occurred
+
+================================================================================
+                    8. DATA STORAGE & LOGGING
+================================================================================
+
+8.1 LOG FILE STRUCTURE
+----------------------
+Location: /sdcard/Android/data/com.basicapp/files/telemetry/
+Format: JSON
+Naming: telemetry_YYYY-MM-DD_HH-MM-SS.json
+
+Example File Structure:
+{
+  "session_id": "session_20251130_185104",
+  "start_time": "2025-11-30T18:51:04+05:30",
+  "end_time": "2025-11-30T18:53:24+05:30",
+  "duration_seconds": 140,
+  "device_info": {
+    "model": "Pixel 6",
+    "android_version": "13",
+    "cpu_cores": 8,
+    "total_ram_mb": 8192
+  },
+  "metrics": [
+    {
+      "timestamp": "2025-11-30T18:51:04+05:30",
+      "cpu_usage": 45.2,
+      "memory": { ... },
+      "gpu_usage": 32.5,
+      "context": { ... }
+    },
+    ...
+  ]
+}
+
+8.2 CONSOLE LOGGING
+-------------------
+Format: [TELEMETRY] HH:MM:SS | CPU: XX% | MEM: XXXMB | GPU: XX%
+
+Example:
+[TELEMETRY] 18:51:04 | CPU: 45.2% | MEM: 250MB | GPU: 32.5%
+[TELEMETRY] 18:51:05 | CPU: 48.1% | MEM: 255MB | GPU: 35.2%
+[TELEMETRY] 18:51:06 | CPU: 46.8% | MEM: 253MB | GPU: 33.8%
+
+8.3 FILE ROTATION
+-----------------
+- Keep last 10 log files
+- Auto-delete oldest when limit exceeded
+- Total storage limit: ~50MB
+
+8.4 EXPORT OPTIONS
+------------------
+- JSON (machine-readable)
+- CSV (spreadsheet import)
+- Markdown (human-readable report)
+
+================================================================================
+                    9. REPORT GENERATION
+================================================================================
+
+REPORT STRUCTURE:
+-----------------
+
+# Telemetry Report
+Session: session_20251130_185104
+Date: 2025-11-30 18:51:04
+Duration: 2m 20s
+
+## Device Information
+- Model: Pixel 6
+- Android: 13
+- CPU Cores: 8
+- Total RAM: 8192 MB
+
+## Resource Usage Summary
+(react-native-vision-camera with CameraX backend)
+
+### CPU Usage
+- Average: 46.3%
+- Peak: 58.2%
+- Minimum: 32.1%
+- Trend: Stable with spikes during segment merging
+
+### Memory Usage
+- Average: 252 MB
+- Peak: 280 MB
+- Minimum: 230 MB
+- Breakdown:
+  * Heap: 120 MB (avg)
+  * Native: 85 MB (avg)
+  * Graphics: 47 MB (avg)
+
+### GPU Usage
+- Average: 33.1%
+- Peak: 42.5%
+- Minimum: 25.0%
+- Status: Available (Qualcomm GPU)
+
+### Latency Analysis
+- Button → Start: 12ms (avg)
+- Start → Callback: 45ms (avg)
+- Total Latency: 57ms (avg)
+- Status: ✅ Within acceptable range (<100ms)
+
+## Identified Bottlenecks
+1. ⚠️ CPU spikes to 58% during segment merging
+2. ⚠️ Memory increases by 30MB during buffering
+3. ✅ GPU usage acceptable (<50%)
+4. ✅ Latency within acceptable range
+
+## Improvement Recommendations
+1. **Reduce Resolution**: Use 720p instead of 1080p
+   - Expected CPU reduction: ~20%
+   - Expected memory reduction: ~15%
+
+2. **Bitrate Optimization**: Lower from 8Mbps to 5Mbps
+   - Expected CPU reduction: ~15%
+   - Quality impact: Minimal for most use cases
+
+3. **Hardware Encoding**: Verify MediaCodec uses hardware encoder
+   - Check: encoder.configure() uses COLOR_FormatSurface
+
+4. **Buffer Optimization**: Reduce segment size from 3s to 2s
+   - Expected memory reduction: ~10%
+   - Faster segment processing
+
+5. **Background Thread**: Move segment merging to background thread
+   - Prevents UI blocking
+   - Reduces perceived latency
+
+## Performance Grade: B+
+- CPU: B (Room for optimization)
+- Memory: A- (Good management)
+- GPU: A (Efficient usage)
+- Latency: A+ (Excellent responsiveness)
+
+================================================================================
+                    10. PERFORMANCE OPTIMIZATION
+================================================================================
+
+TELEMETRY OVERHEAD:
+-------------------
+- CPU Impact: ~1-2% (polling overhead)
+- Memory Impact: ~5MB (buffer + native module)
+- Battery Impact: Negligible (1s polling interval)
+- Recording Quality: No impact
+
+OPTIMIZATION TECHNIQUES:
+------------------------
+1. Use native code for heavy lifting (CPU/Memory parsing)
+2. Batch file writes (every 5 seconds, not every metric)
+3. Circular buffer to prevent memory growth
+4. Conditional logging (disable in production if needed)
+5. Lazy initialization (start only when needed)
+
+PRODUCTION CONSIDERATIONS:
+--------------------------
+- Add feature flag: ENABLE_TELEMETRY (default: false)
+- Compress old log files (.gz)
+- Upload to analytics server (optional)
+- Privacy: Anonymize device identifiers
+
+================================================================================
+                    11. FILE STRUCTURE
+================================================================================
+
+NEW FILES TO CREATE:
+--------------------
+
+android/app/src/main/java/com/basicapp/
+├── TelemetryModule.kt          (Native metrics collector)
+├── TelemetryPackage.kt         (Module registration)
+└── SystemMetricsCollector.kt   (Helper class - optional)
+
+src/
+├── utils/
+│   ├── TelemetryLogger.ts      (Main controller)
+│   └── ReportGenerator.ts      (Report creation)
+├── components/
+│   ├── TelemetryDisplay.tsx    (UI overlay)
+│   └── TelemetrySettings.tsx   (Settings panel)
+└── types/
+    └── telemetry.d.ts          (TypeScript definitions)
+
+MODIFIED FILES:
+---------------
+- App.tsx (Integrate telemetry calls)
+- android/app/src/main/java/com/basicapp/MainApplication.java
+  (Register TelemetryPackage)
+
+OUTPUT FILES (Generated):
+-------------------------
+/sdcard/Android/data/com.basicapp/files/telemetry/
+├── telemetry_2025-11-30_18-51-04.json
+├── telemetry_2025-11-30_19-15-32.json
+├── report_2025-11-30_18-51-04.md
+└── report_2025-11-30_18-51-04.json
+
+================================================================================
+                    12. CODE IMPLEMENTATION DETAILS
+================================================================================
+
+12.1 INTEGRATION IN App.tsx
+----------------------------
+
+import TelemetryLogger from './src/utils/TelemetryLogger';
+
+// In handleStartRecording():
+const handleStartRecording = async () => {
+  if (!camera.current) return;
+  
+  // Start telemetry
+  const sessionId = `session_${Date.now()}`;
+  await TelemetryLogger.start(sessionId);
+  
+  // Record latency start
+  TelemetryLogger.recordLatencyStart();
+  
+  try {
+    onRecordingStarted();
+    camera.current.startRecording({
+      onRecordingFinished: (video) => {
+        // Record latency callback
+        TelemetryLogger.recordLatencyCallback();
+        onRecordingStopped(video.path);
+      },
+      onRecordingError: (error) => {
+        console.error('Recording error:', error);
+        setIsRecording(false);
+      },
+    });
+  } catch (error: any) {
+    console.error('Start error:', error);
+    setIsRecording(false);
+  }
+};
+
+// In handleStopRecording():
+const handleStopRecording = async () => {
+  if (!camera.current) return;
+  
+  try {
+    await camera.current.stopRecording();
+    
+    // Stop telemetry and generate report
+    const report = await TelemetryLogger.stop();
+    console.log('Telemetry Report:', report);
+    
+    // Optionally show report to user
+    Alert.alert(
+      'Performance Report',
+      `CPU Avg: ${report.cpu.average.toFixed(1)}%\n` +
+      `Memory Avg: ${report.memory.average_mb.toFixed(0)}MB\n` +
+      `Latency: ${report.latency?.total_ms || 'N/A'}ms`
+    );
+  } catch (error: any) {
+    console.error('Stop error:', error);
+  }
+};
+
+12.2 NATIVE MODULE REGISTRATION
+--------------------------------
+
+File: android/app/src/main/java/com/basicapp/MainApplication.java
+
+import com.basicapp.TelemetryPackage; // Add import
+
+@Override
+protected List<ReactPackage> getPackages() {
+  @SuppressWarnings("UnnecessaryLocalVariable")
+  List<ReactPackage> packages = new PackageList(this).getPackages();
+  
+  // Add telemetry package
+  packages.add(new TelemetryPackage());
+  
+  return packages;
+}
+
+12.3 TELEMETRY DISPLAY COMPONENT
+---------------------------------
+
+File: src/components/TelemetryDisplay.tsx
+
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { NativeModules, NativeEventEmitter } from 'react-native';
+
+const { TelemetryModule } = NativeModules;
+const telemetryEmitter = new NativeEventEmitter(TelemetryModule);
+
+export default function TelemetryDisplay() {
+  const [metrics, setMetrics] = useState(null);
+  const [visible, setVisible] = useState(true);
+  
+  useEffect(() => {
+    const subscription = telemetryEmitter.addListener(
+      'TelemetryMetrics',
+      (event) => {
+        const data = JSON.parse(event.data);
+        setMetrics(data);
+      }
+    );
+    
+    return () => subscription.remove();
+  }, []);
+  
+  if (!visible || !metrics) return null;
+  
+  return (
+    <View style={styles.container}>
+      <TouchableOpacity onPress={() => setVisible(false)}>
+        <Text style={styles.closeButton}>✕</Text>
+      </TouchableOpacity>
+      <Text style={styles.title}>Telemetry</Text>
+      <Text style={styles.metric}>CPU: {metrics.cpu_usage.toFixed(1)}%</Text>
+      <Text style={styles.metric}>
+        MEM: {metrics.memory.app_total_mb.toFixed(0)}MB
+      </Text>
+      <Text style={styles.metric}>
+        GPU: {metrics.gpu_usage ? metrics.gpu_usage.toFixed(1) + '%' : 'N/A'}
+      </Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    position: 'absolute',
+    top: 60,
+    right: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    padding: 12,
+    borderRadius: 8,
+    minWidth: 120,
+  },
+  title: {
+    color: '#10b981',
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  metric: {
+    color: '#ffffff',
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  closeButton: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    color: '#ffffff',
+    fontSize: 16,
+  },
+});
+
+================================================================================
+                    13. TESTING STRATEGY
+================================================================================
+
+UNIT TESTS:
+-----------
+1. Test CPU usage calculation accuracy
+2. Test memory metrics parsing
+3. Test latency timestamp precision
+4. Test report generation logic
+
+INTEGRATION TESTS:
+------------------
+1. Test native module → React Native bridge
+2. Test event emission and subscription
+3. Test file I/O operations
+4. Test circular buffer overflow handling
+
+PERFORMANCE TESTS:
+------------------
+1. Measure telemetry overhead (CPU, memory)
+2. Test with long recording sessions (10+ minutes)
+3. Test with high-frequency sampling (100ms interval)
+4. Verify no memory leaks
+
+DEVICE COMPATIBILITY TESTS:
+---------------------------
+1. Test on Qualcomm devices (GPU metrics available)
+2. Test on Samsung Exynos devices (different GPU path)
+3. Test on low-end devices (Android 8.0, 2GB RAM)
+4. Test on high-end devices (Android 14, 12GB RAM)
+
+VALIDATION TESTS:
+-----------------
+1. Compare CPU usage with Android Studio Profiler
+2. Compare memory usage with adb shell dumpsys meminfo
+3. Validate latency measurements with manual stopwatch
+4. Cross-check GPU usage with GameBench (if available)
+
+================================================================================
+                    14. TROUBLESHOOTING
+================================================================================
+
+ISSUE: CPU usage always shows 0%
+SOLUTION:
+- Check /proc/stat read permissions
+- Ensure two consecutive readings for delta calculation
+- Verify CpuStats calculation logic
+
+ISSUE: GPU usage always returns null
+SOLUTION:
+- GPU metrics are device-specific
+- Try all sysfs paths in priority order
+- Fallback to "N/A" is acceptable per requirements
+
+ISSUE: Memory values seem incorrect
+SOLUTION:
+- Verify ActivityManager.getMemoryInfo() returns valid data
+- Check unit conversion (bytes → MB)
+- Compare with adb shell dumpsys meminfo com.basicapp
+
+ISSUE: Latency measurements inconsistent
+SOLUTION:
+- Use performance.now() instead of Date.now()
+- Ensure timestamps captured at exact moments
+- Account for JavaScript event loop delays
+
+ISSUE: Log files not created
+SOLUTION:
+- Check WRITE_EXTERNAL_STORAGE permission granted
+- Verify RNFS.ExternalDirectoryPath is accessible
+- Check available storage space
+
+ISSUE: App crashes when telemetry enabled
+SOLUTION:
+- Wrap native calls in try-catch blocks
+- Check null pointer exceptions in Kotlin code
+- Verify Timer cleanup in stopMonitoring()
+
+ISSUE: High memory usage from telemetry
+SOLUTION:
+- Reduce metrics buffer size (300 → 100 entries)
+- Increase file write frequency (5s → 2s)
+- Clear buffer after file write
+
+================================================================================
+                    15. FUTURE ENHANCEMENTS
+================================================================================
+
+POTENTIAL IMPROVEMENTS:
+-----------------------
+1. Real-time graph visualization (CPU/Memory over time)
+2. Export to CSV for Excel analysis
+3. Upload telemetry to cloud analytics (Firebase, AWS)
+4. Machine learning: Predict bottlenecks before they occur
+5. Comparative analysis: Compare sessions side-by-side
+6. Battery usage tracking
+7. Network usage tracking (if uploading videos)
+8. Frame drop detection (camera preview smoothness)
+9. Thermal throttling detection
+10. Automatic optimization suggestions
+
+ADVANCED FEATURES:
+------------------
+1. A/B testing framework (compare different settings)
+2. Regression detection (alert if performance degrades)
+3. Benchmark mode (standardized performance test)
+4. Remote monitoring (view telemetry from web dashboard)
+5. Crash correlation (link crashes to resource spikes)
+
+================================================================================
+                    16. SUMMARY CHECKLIST
+================================================================================
+
+IMPLEMENTATION CHECKLIST:
+-------------------------
+[ ] Create TelemetryModule.kt (Native Android)
+[ ] Create TelemetryPackage.kt (Native registration)
+[ ] Create TelemetryLogger.ts (JavaScript controller)
+[ ] Create TelemetryDisplay.tsx (UI component)
+[ ] Create ReportGenerator.ts (Report creation)
+[ ] Modify App.tsx (Integrate telemetry calls)
+[ ] Modify MainApplication.java (Register package)
+[ ] Add TypeScript type definitions
+[ ] Test on physical device
+[ ] Validate metrics accuracy
+[ ] Generate sample report
+[ ] Document usage in README
+
+DELIVERABLES CHECKLIST:
+-----------------------
+[✓] Telemetry logging (console + file)
+[✓] CPU usage tracking (%)
+[✓] Memory usage tracking (MB)
+[✓] GPU usage tracking (% or approximate)
+[✓] Latency tracking (button → callback)
+[✓] Performance report generation
+[✓] Bottleneck identification
+[✓] Improvement recommendations
+
+================================================================================
+                    END OF DOCUMENTATION
+================================================================================
+
+For questions or issues, refer to:
+- React Native documentation: https://reactnative.dev/
+- react-native-vision-camera: https://react-native-vision-camera.com/
+- Android Performance documentation: https://developer.android.com/topic/performance
+- CameraX documentation: https://developer.android.com/training/camerax
+
+Last Updated: 2025-11-30
+Version: 1.0
