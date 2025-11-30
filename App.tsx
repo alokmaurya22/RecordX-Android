@@ -19,6 +19,7 @@ import {
   Modal,
   Switch,
   ActivityIndicator,
+  NativeModules,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -31,6 +32,8 @@ import Video from 'react-native-video';
 import RNFS from 'react-native-fs';
 import { CameraRoll } from '@react-native-camera-roll/camera-roll';
 import { Picker } from '@react-native-picker/picker';
+
+const { VideoMerger } = NativeModules;
 
 function App(): React.JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
@@ -117,14 +120,15 @@ function App(): React.JSX.Element {
           onRecordingFinished: (video) => {
             setSegmentQueue(prev => {
               const newQueue = [...prev, video.path];
-              // Keep only last N segments
-              if (newQueue.length > preBufferDuration) {
+              // Keep only last N seconds worth of segments (each segment = 3s)
+              const maxSegments = Math.ceil(preBufferDuration / 3);
+              if (newQueue.length > maxSegments) {
                 const removed = newQueue.shift();
                 if (removed) {
                   RNFS.unlink(removed).catch(() => { });
                 }
               }
-              console.log(`Buffer: ${newQueue.length}/${preBufferDuration} segments`);
+              console.log(`Buffer: ${newQueue.length} segments (${newQueue.length * 3}s / ${preBufferDuration}s)`);
               return newQueue;
             });
             segmentRecordingRef.current = false;
@@ -246,61 +250,32 @@ function App(): React.JSX.Element {
     }
   };
 
-  // Merge segments - WORKAROUND: Save first segment only
-  // TODO: Implement proper merging with FFmpeg or native code
+  // Save segments info (merge will be implemented later)
   const mergeAndSaveSegments = async (segments: string[]) => {
     if (segments.length === 0) {
-      Alert.alert('Error', 'No segments to merge');
+      Alert.alert('Error', 'No segments to save');
       return;
     }
 
     try {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('.')[0];
-      const filename = `VID_${timestamp}.mp4`;
-      const outputPath = `${RNFS.ExternalStorageDirectoryPath}/Movies/${filename}`;
+      console.log('=== SEGMENTS COLLECTED ===');
+      console.log(`Total segments: ${segments.length}`);
+      console.log(`Total duration: ~${segments.length * 3}s`);
+      console.log('Segment paths:');
+      segments.forEach((path, index) => {
+        console.log(`  ${index + 1}. ${path}`);
+      });
+      console.log('========================');
 
-      // WORKAROUND: Binary concatenation doesn't work for MP4
-      // For now, save only the first segment
-      // Proper solution needs FFmpeg or native MP4 muxer
-      console.log(`Saving first segment out of ${segments.length} segments`);
-      console.log(`Source path: ${segments[0]}`);
-      console.log(`Destination path: ${outputPath}`);
-
-      // Check if source file exists
-      const fileExists = await RNFS.exists(segments[0]);
-      console.log(`File exists: ${fileExists}`);
-
-      if (!fileExists) {
-        throw new Error(`Source file does not exist: ${segments[0]}`);
-      }
-
-      // Use copyFile instead of moveFile to preserve original
-      await RNFS.copyFile(segments[0], outputPath);
-
-      // Add to gallery
-      try {
-        await CameraRoll.save(`file://${outputPath}`, { type: 'video' });
-        console.log('Video added to gallery');
-      } catch (err) {
-        console.warn('Failed to add to gallery:', err);
-      }
-
-      setRecordedVideoPath(outputPath);
-      setRecordingStatus('Video saved!');
-
-      // Notify user about limitation
-      if (segments.length > 1) {
-        Alert.alert(
-          'Video Saved',
-          `Note: Saved first segment only. Full merging requires FFmpeg.\nSegments: ${segments.length}, Duration: ~${segments.length * 2}s`,
-        );
-      } else {
-        Alert.alert('Success', 'Video saved to Gallery');
-      }
+      setRecordingStatus('Segments collected!');
+      Alert.alert(
+        'Segments Collected',
+        `Pre-buffer + Post-buffer segments saved!\n\nTotal: ${segments.length} segments\nDuration: ~${segments.length * 3}s\n\nCheck console for paths.`
+      );
     } catch (error: any) {
-      console.error('Save error:', error);
-      setRecordingStatus('Error saving video');
-      Alert.alert('Error', 'Failed to save video');
+      console.error('Error:', error);
+      setRecordingStatus('Error collecting segments');
+      Alert.alert('Error', `Failed: ${error.message || error}`);
     }
   };
 
