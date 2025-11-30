@@ -459,7 +459,7 @@ function App(): React.JSX.Element {
                 </View>
               </View>
               <Text style={styles.durationInfo}>
-                Total: {preBufferDuration + postBufferDuration}s | Buffer: {segmentQueue.length}/{preBufferDuration}
+                Total: {preBufferDuration + postBufferDuration}s | Buffer: {segmentQueue.length * 2}s/{preBufferDuration}s
               </Text>
             </View>
           )}
@@ -490,7 +490,7 @@ function App(): React.JSX.Element {
               )}
               {isBuffering && (
                 <View style={styles.bufferingBadge}>
-                  <Text style={styles.bufferingText}>BUFFERING {segmentQueue.length}/{preBufferDuration}</Text>
+                  <Text style={styles.bufferingText}>BUFFERING {segmentQueue.length * 2}s/{preBufferDuration}s</Text>
                 </View>
               )}
             </View>
@@ -514,12 +514,12 @@ function App(): React.JSX.Element {
             </View>
           ) : (
             <TouchableOpacity
-              style={[styles.captureButton, (isCapturing || segmentQueue.length < preBufferDuration) && styles.disabledButton]}
+              style={[styles.captureButton, (isCapturing || segmentQueue.length * 2 < preBufferDuration) && styles.disabledButton]}
               onPress={handleCircularCapture}
-              disabled={isCapturing || segmentQueue.length < preBufferDuration}>
+              disabled={isCapturing || segmentQueue.length * 2 < preBufferDuration}>
               <Text style={styles.captureButtonText}>
-                {segmentQueue.length < preBufferDuration
-                  ? `Buffering... ${segmentQueue.length}/${preBufferDuration}`
+                {segmentQueue.length * 2 < preBufferDuration
+                  ? `Buffering... ${segmentQueue.length * 2}s/${preBufferDuration}s`
                   : `Capture (${preBufferDuration}s + ${postBufferDuration}s)`}
               </Text>
             </TouchableOpacity>
