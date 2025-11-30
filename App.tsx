@@ -220,6 +220,59 @@ function App(): React.JSX.Element {
     }
   };
 
+  // Reset entire app state
+  const resetApp = () => {
+    console.log(' ===== RESETTING APP =====');
+
+    // Stop any ongoing recording
+    if (isRecording && camera.current) {
+      try {
+        camera.current.stopRecording();
+      } catch (e) {
+        console.warn('Error stopping recording during reset:', e);
+      }
+    }
+
+    // Stop buffering
+    if (isBuffering) {
+      stopContinuousBuffering();
+    }
+
+    // Clear timers
+    if (timerInterval.current) {
+      clearInterval(timerInterval.current);
+      timerInterval.current = null;
+    }
+
+    // Reset all state variables
+    setIsRecording(false);
+    setRecordedVideoPath(null);
+    setRecordingStatus('Ready to record');
+    setShowPreview(false);
+    setRecordingTime(0);
+    setBufferMode(false);
+    setIsBuffering(false);
+    setSegmentQueue([]);
+    setPreBufferDuration(5);
+    setPostBufferDuration(5);
+    setIsCapturing(false);
+    setIsMerging(false);
+    setIsPreBufferCustom(false);
+    setIsPostBufferCustom(false);
+    setPreBufferInput('');
+    setPostBufferInput('');
+
+    // Reset refs
+    isBufferingRef.current = false;
+    isCapturingRef.current = false;
+    segmentRecordingRef.current = false;
+    preBufferDurationRef.current = 5;
+
+    console.log(' App reset complete!');
+    Alert.alert('App Reset', 'All settings and recordings have been cleared.');
+  };
+
+
   // Capture: Save pre-buffer + record post-buffer
   const handleCircularCapture = async () => {
     if (!camera.current || isCapturing) return;
@@ -529,10 +582,14 @@ function App(): React.JSX.Element {
       <SafeAreaView style={backgroundStyle}>
         <StatusBar barStyle="light-content" backgroundColor={backgroundStyle.backgroundColor} />
         <View style={styles.container}>
-          <View style={styles.headerContainer}>
+          <TouchableOpacity
+            style={styles.headerContainer}
+            onPress={resetApp}
+            activeOpacity={0.7}
+          >
             <Text style={styles.header}>Video Recorder</Text>
-            <Text style={styles.subtitle}>Circular Buffer Recording</Text>
-          </View>
+            <Text style={styles.subtitle}>Circular Buffer Recording • Tap to Reset</Text>
+          </TouchableOpacity>
 
           {/* Buffer Mode Toggle */}
           <View style={styles.bufferModeCard}>
