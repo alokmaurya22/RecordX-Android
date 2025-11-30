@@ -263,7 +263,19 @@ function App(): React.JSX.Element {
       // For now, save only the first segment
       // Proper solution needs FFmpeg or native MP4 muxer
       console.log(`Saving first segment out of ${segments.length} segments`);
-      await RNFS.moveFile(segments[0], outputPath);
+      console.log(`Source path: ${segments[0]}`);
+      console.log(`Destination path: ${outputPath}`);
+
+      // Check if source file exists
+      const fileExists = await RNFS.exists(segments[0]);
+      console.log(`File exists: ${fileExists}`);
+
+      if (!fileExists) {
+        throw new Error(`Source file does not exist: ${segments[0]}`);
+      }
+
+      // Use copyFile instead of moveFile to preserve original
+      await RNFS.copyFile(segments[0], outputPath);
 
       // Add to gallery
       try {
