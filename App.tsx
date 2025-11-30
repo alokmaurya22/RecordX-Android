@@ -194,8 +194,9 @@ function App(): React.JSX.Element {
 
     const postBufferSegments: string[] = [];
 
-    // Record post-buffer segments
-    for (let i = 0; i < postBufferDuration; i++) {
+    // Record post-buffer segments (each segment = 2s)
+    const segmentsNeeded = Math.ceil(postBufferDuration / 2);
+    for (let i = 0; i < segmentsNeeded; i++) {
       await new Promise<void>((resolve) => {
         camera.current?.startRecording({
           onRecordingFinished: (video) => {
@@ -490,7 +491,7 @@ function App(): React.JSX.Element {
               )}
               {isBuffering && (
                 <View style={styles.bufferingBadge}>
-                  <Text style={styles.bufferingText}>BUFFERING {segmentQueue.length * 2}s/{preBufferDuration}s</Text>
+                  <Text style={styles.bufferingText}>BUFFERING</Text>
                 </View>
               )}
             </View>
@@ -519,8 +520,8 @@ function App(): React.JSX.Element {
               disabled={isCapturing || segmentQueue.length * 2 < preBufferDuration}>
               <Text style={styles.captureButtonText}>
                 {segmentQueue.length * 2 < preBufferDuration
-                  ? `Buffering... ${segmentQueue.length * 2}s/${preBufferDuration}s`
-                  : `Capture (${preBufferDuration}s + ${postBufferDuration}s)`}
+                  ? 'Buffering...'
+                  : 'Capture'}
               </Text>
             </TouchableOpacity>
           )}
