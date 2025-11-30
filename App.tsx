@@ -20,6 +20,7 @@ import {
   Switch,
   ActivityIndicator,
   NativeModules,
+  TextInput,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -45,6 +46,7 @@ function App(): React.JSX.Element {
   const [showPreview, setShowPreview] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
 
+
   // Circular buffer state
   const [bufferMode, setBufferMode] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
@@ -54,10 +56,18 @@ function App(): React.JSX.Element {
   const [isCapturing, setIsCapturing] = useState(false);
   const [isMerging, setIsMerging] = useState(false);
 
+  // Custom duration mode tracking
+  const [isPreBufferCustom, setIsPreBufferCustom] = useState(false);
+  const [isPostBufferCustom, setIsPostBufferCustom] = useState(false);
+  const [preBufferInput, setPreBufferInput] = useState('');
+  const [postBufferInput, setPostBufferInput] = useState('');
+
   const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const bufferingInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const segmentRecordingRef = useRef(false);
   const isBufferingRef = useRef(false);
+  const isCapturingRef = useRef(false); // Track capture state for callbacks
+  const preBufferDurationRef = useRef(preBufferDuration); // Track current preBufferDuration
   const camera = useRef<Camera>(null);
   const device = useCameraDevice('back');
   const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } = useCameraPermission();
@@ -71,6 +81,11 @@ function App(): React.JSX.Element {
   useEffect(() => {
     requestPermissions();
   }, []);
+
+  // Update ref when preBufferDuration changes
+  useEffect(() => {
+    preBufferDurationRef.current = preBufferDuration;
+  }, [preBufferDuration]);
 
   // Start/stop buffering when buffer mode changes
   useEffect(() => {
@@ -129,30 +144,41 @@ function App(): React.JSX.Element {
             console.log('Segment finished:', video.path);
             segmentRecordingRef.current = false;
 
-            setSegmentQueue(prev => {
-              const newQueue = [...prev, video.path];
-              // Keep only last N seconds worth of segments (each segment = 3s)
-              const maxSegments = Math.ceil(preBufferDuration / 3);
-              if (newQueue.length > maxSegments) {
-                const removed = newQueue.shift();
-                if (removed) {
-                  RNFS.unlink(removed).catch(() => { });
-                }
-              }
-              console.log(`Buffer: ${newQueue.length} segments (${newQueue.length * 3}s / ${preBufferDuration}s)`);
-              return newQueue;
-            });
+            // Only update queue if we're still in buffering mode (not capturing)
+            if (!isCapturingRef.current) {
+              setSegmentQueue(prev => {
+                const newQueue = [...prev, video.path];
+                // Keep only last N seconds worth of segments (each segment = 3s)
+                // Use ref to get current preBufferDuration value (avoid stale closure)
+                const currentPreBuffer = preBufferDurationRef.current;
+                const maxSegments = Math.ceil(currentPreBuffer / 3);
 
-            // Recursively record next segment if still buffering
-            if (isBufferingRef.current && !isCapturing) {
-              recordSegment();
+                // Remove old segments if queue exceeds limit
+                while (newQueue.length > maxSegments) {
+                  const removed = newQueue.shift();
+                  if (removed) {
+                    RNFS.unlink(removed).catch(() => { });
+                  }
+                }
+                console.log(`Buffer: ${newQueue.length} segments (${newQueue.length * 3}s / ${currentPreBuffer}s) [Max: ${maxSegments}]`);
+                return newQueue;
+              });
+
+              // Recursively record next segment if still buffering
+              if (isBufferingRef.current) {
+                recordSegment();
+              }
+            } else {
+              // During capture, just delete the segment that finished
+              console.log('⚠️ Segment finished during capture, deleting:', video.path);
+              RNFS.unlink(video.path).catch(() => { });
             }
           },
           onRecordingError: (error) => {
             console.error('Segment error:', error);
             segmentRecordingRef.current = false;
             // Retry after delay if error
-            if (isBufferingRef.current && !isCapturing) {
+            if (isBufferingRef.current && !isCapturingRef.current) {
               setTimeout(recordSegment, 1000);
             }
           },
@@ -198,27 +224,38 @@ function App(): React.JSX.Element {
   const handleCircularCapture = async () => {
     if (!camera.current || isCapturing) return;
 
+    console.log('🎬 ===== CAPTURE STARTED =====');
+
+    // Set both state and ref immediately
     setIsCapturing(true);
+    isCapturingRef.current = true;
 
     // Stop buffering loop
     isBufferingRef.current = false;
     setIsBuffering(false);
 
-    // If currently recording a segment, stop it gracefully
+    // If currently recording a pre-buffer segment, stop it gracefully
     if (segmentRecordingRef.current && camera.current) {
+      console.log('⏸️ Stopping current pre-buffer segment...');
       try {
         await camera.current.stopRecording();
-        // Wait a bit for the callback to fire and clear the flag
-        await new Promise(r => setTimeout(r, 500));
+        // Wait for the callback to fire and segment to be saved
+        await new Promise<void>(resolve => setTimeout(resolve, 600));
       } catch (e) {
-        console.warn('Error stopping pre-buffer segment:', e);
+        console.warn('⚠️ Error stopping pre-buffer segment:', e);
       }
       segmentRecordingRef.current = false;
     }
 
+    // SNAPSHOT: Take a copy of current queue (prevents interference)
     const preBufferSegments = [...segmentQueue];
-    console.log(`Pre-buffer: ${preBufferSegments.length} segments`);
+    console.log(`📹 Pre-buffer snapshot: ${preBufferSegments.length} segments (${preBufferSegments.length * 3}s)`);
 
+    if (preBufferSegments.length === 0) {
+      console.warn('⚠️ No pre-buffer segments available!');
+    }
+
+    // Start post-buffer recording
     setRecordingStatus(`Recording ${postBufferDuration}s post-buffer...`);
     setRecordingTime(0);
 
@@ -229,33 +266,63 @@ function App(): React.JSX.Element {
 
     const postBufferSegments: string[] = [];
 
-    // Record post-buffer segments (each segment = 3s)
+    // Record post-buffer segments sequentially (each segment = 3s)
     const segmentsNeeded = Math.ceil(postBufferDuration / 3);
+    console.log(`📹 Recording ${segmentsNeeded} post-buffer segments...`);
+
     for (let i = 0; i < segmentsNeeded; i++) {
+      console.log(`\n🔴 Recording post-buffer segment ${i + 1}/${segmentsNeeded}...`);
+
+      // Wait for segment to complete
       await new Promise<void>((resolve) => {
-        // Add small delay between segments to avoid race conditions
-        setTimeout(() => {
-          camera.current?.startRecording({
+        if (!camera.current) {
+          console.error('❌ Camera not available');
+          resolve();
+          return;
+        }
+
+        let recordingCompleted = false;
+
+        try {
+          camera.current.startRecording({
             onRecordingFinished: (video) => {
+              console.log(`✅ Post-buffer segment ${i + 1} finished: ${video.path}`);
               postBufferSegments.push(video.path);
-              resolve();
+              recordingCompleted = true;
+              // Wait for file to be fully written
+              setTimeout(() => resolve(), 400);
             },
             onRecordingError: (error) => {
-              console.error('Post-buffer error:', error);
-              resolve();
+              console.error(`❌ Post-buffer segment ${i + 1} error:`, error);
+              recordingCompleted = true;
+              resolve(); // Continue to next segment
             },
           });
 
+          // Stop recording after 3 seconds
           setTimeout(async () => {
-            try {
-              await camera.current?.stopRecording();
-            } catch (e) {
-              console.warn('Stop recording error:', e);
+            if (!recordingCompleted && camera.current) {
+              try {
+                console.log(`⏹️ Stopping post-buffer segment ${i + 1}...`);
+                await camera.current.stopRecording();
+              } catch (e) {
+                console.warn(`⚠️ Stop error for segment ${i + 1}:`, e);
+                if (!recordingCompleted) {
+                  resolve();
+                }
+              }
             }
           }, 3000);
-        }, 100); // Small delay to ensure previous recording is fully stopped
+        } catch (error) {
+          console.error(`❌ Failed to start segment ${i + 1}:`, error);
+          resolve();
+        }
       });
+
+      console.log(`✔️ Post-buffer segment ${i + 1} complete`);
     }
+
+    console.log(`\n📹 Post-buffer complete: ${postBufferSegments.length} segments (${postBufferSegments.length * 3}s)`);
 
     // Stop timer
     if (timerInterval.current) {
@@ -263,25 +330,33 @@ function App(): React.JSX.Element {
       timerInterval.current = null;
     }
 
-    console.log(`Post-buffer: ${postBufferSegments.length} segments`);
+    // Merge all segments
+    console.log('\n🔄 Starting merge process...');
     setRecordingStatus('Merging videos...');
     setIsMerging(true);
 
-    // Merge all segments
     const allSegments = [...preBufferSegments, ...postBufferSegments];
+    console.log(`📦 Total segments to merge: ${allSegments.length}`);
+
     await mergeAndSaveSegments(allSegments);
 
-    // Cleanup
+    // Cleanup segments
+    console.log('🗑️ Cleaning up temporary segments...');
     allSegments.forEach(path => {
       RNFS.unlink(path).catch(() => { });
     });
 
+    // Clear queue and reset state
     setSegmentQueue([]);
     setIsCapturing(false);
+    isCapturingRef.current = false;
     setIsMerging(false);
 
-    // Restart buffering
+    console.log('🎬 ===== CAPTURE COMPLETE =====\n');
+
+    // Restart buffering if buffer mode is still on
     if (bufferMode) {
+      console.log('🔄 Restarting continuous buffering...');
       startContinuousBuffering();
     } else {
       setRecordingStatus('Ready to record');
@@ -465,7 +540,7 @@ function App(): React.JSX.Element {
             <Switch
               value={bufferMode}
               onValueChange={setBufferMode}
-              disabled={isRecording || isCapturing}
+              disabled={isRecording || isCapturing || isPreBufferCustom || isPostBufferCustom}
               trackColor={{ false: '#2a2a3e', true: '#10b981' }}
               thumbColor={bufferMode ? '#ffffff' : '#8b8b9a'}
             />
@@ -474,39 +549,144 @@ function App(): React.JSX.Element {
           {/* Duration Selectors */}
           {bufferMode && (
             <View style={styles.durationCard}>
+              {/* Pre-Buffer Duration */}
               <View style={styles.durationRow}>
                 <Text style={styles.durationLabel}>Pre-Buffer:</Text>
                 <View style={styles.pickerContainer}>
                   <Picker
-                    selectedValue={preBufferDuration}
-                    onValueChange={(value) => setPreBufferDuration(value)}
+                    selectedValue={isPreBufferCustom ? 'custom' : (preBufferDuration === 3 || preBufferDuration === 5 || preBufferDuration === 10 ? preBufferDuration : 'custom')}
+                    onValueChange={(value) => {
+                      if (value === 'custom') {
+                        setIsPreBufferCustom(true);
+                        setPreBufferInput('');
+                      } else {
+                        setIsPreBufferCustom(false);
+                        setPreBufferDuration(value as number);
+                      }
+                    }}
                     style={styles.picker}
                     mode="dropdown"
                     dropdownIconColor="#ffffff">
                     <Picker.Item label="3 seconds" value={3} />
                     <Picker.Item label="5 seconds" value={5} />
                     <Picker.Item label="10 seconds" value={10} />
+                    <Picker.Item
+                      label={preBufferDuration !== 3 && preBufferDuration !== 5 && preBufferDuration !== 10 && !isPreBufferCustom
+                        ? `Custom (${preBufferDuration}s)`
+                        : "Custom"}
+                      value="custom"
+                    />
                   </Picker>
                 </View>
               </View>
+
+              {/* Custom Pre-Buffer Input */}
+              {isPreBufferCustom && (
+                <View style={styles.customInputRow}>
+                  <Text style={styles.customInputLabel}>Enter Duration (1-60s):</Text>
+                  <TextInput
+                    style={styles.customInput}
+                    value={preBufferInput}
+                    onChangeText={setPreBufferInput}
+                    onSubmitEditing={() => {
+                      const num = parseInt(preBufferInput);
+                      if (num && num >= 1 && num <= 60) {
+                        setPreBufferDuration(num);
+                        setIsPreBufferCustom(false);
+
+                        // Restart buffering if buffer mode is on
+                        if (bufferMode && !isBuffering && !isCapturing) {
+                          setTimeout(() => {
+                            startContinuousBuffering();
+                          }, 100);
+                        }
+                      } else {
+                        Alert.alert('Invalid Input', 'Please enter a number between 1 and 60');
+                      }
+                    }}
+                    keyboardType="numeric"
+                    placeholder="Type and press Enter"
+                    placeholderTextColor="#8b8b9a"
+                    autoFocus={true}
+                    returnKeyType="done"
+                  />
+                </View>
+              )}
+
+              {/* Post-Buffer Duration */}
               <View style={styles.durationRow}>
                 <Text style={styles.durationLabel}>Post-Buffer:</Text>
                 <View style={styles.pickerContainer}>
                   <Picker
-                    selectedValue={postBufferDuration}
-                    onValueChange={(value) => setPostBufferDuration(value)}
+                    selectedValue={isPostBufferCustom ? 'custom' : (postBufferDuration === 3 || postBufferDuration === 5 || postBufferDuration === 10 ? postBufferDuration : 'custom')}
+                    onValueChange={(value) => {
+                      if (value === 'custom') {
+                        setIsPostBufferCustom(true);
+                        setPostBufferInput('');
+                      } else {
+                        setIsPostBufferCustom(false);
+                        setPostBufferDuration(value as number);
+                      }
+                    }}
                     style={styles.picker}
                     mode="dropdown"
                     dropdownIconColor="#ffffff">
                     <Picker.Item label="3 seconds" value={3} />
                     <Picker.Item label="5 seconds" value={5} />
                     <Picker.Item label="10 seconds" value={10} />
+                    <Picker.Item
+                      label={postBufferDuration !== 3 && postBufferDuration !== 5 && postBufferDuration !== 10 && !isPostBufferCustom
+                        ? `Custom (${postBufferDuration}s)`
+                        : "Custom"}
+                      value="custom"
+                    />
                   </Picker>
                 </View>
               </View>
+
+              {/* Custom Post-Buffer Input */}
+              {isPostBufferCustom && (
+                <View style={styles.customInputRow}>
+                  <Text style={styles.customInputLabel}>Enter Duration (1-60s):</Text>
+                  <TextInput
+                    style={styles.customInput}
+                    value={postBufferInput}
+                    onChangeText={setPostBufferInput}
+                    onSubmitEditing={() => {
+                      const num = parseInt(postBufferInput);
+                      if (num && num >= 1 && num <= 60) {
+                        setPostBufferDuration(num);
+                        setIsPostBufferCustom(false);
+
+                        // Restart buffering if buffer mode is on and not already buffering
+                        if (bufferMode && !isBuffering && !isCapturing) {
+                          setTimeout(() => {
+                            startContinuousBuffering();
+                          }, 100);
+                        }
+                      } else {
+                        Alert.alert('Invalid Input', 'Please enter a number between 1 and 60');
+                      }
+                    }}
+                    keyboardType="numeric"
+                    placeholder="Type and press Enter"
+                    placeholderTextColor="#8b8b9a"
+                    autoFocus={true}
+                    returnKeyType="done"
+                  />
+                </View>
+              )}
+
               <Text style={styles.durationInfo}>
                 Total: {preBufferDuration + postBufferDuration}s | Buffer: {segmentQueue.length * 3}s/{preBufferDuration}s
               </Text>
+
+              {/* Warning when custom input is active */}
+              {(isPreBufferCustom || isPostBufferCustom) && (
+                <Text style={styles.customInputWarning}>
+                  ⚠️ Enter duration and press Enter to continue
+                </Text>
+              )}
             </View>
           )}
 
@@ -546,27 +726,29 @@ function App(): React.JSX.Element {
           {!bufferMode ? (
             <View style={styles.controlsContainer}>
               <TouchableOpacity
-                style={[styles.controlButton, styles.startButton, isRecording && styles.disabledButton]}
+                style={[styles.controlButton, styles.startButton, (isRecording || isPreBufferCustom || isPostBufferCustom) && styles.disabledButton]}
                 onPress={handleStartRecording}
-                disabled={isRecording}>
+                disabled={isRecording || isPreBufferCustom || isPostBufferCustom}>
                 <Text style={styles.buttonText}>▶ Start</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.controlButton, styles.stopButton, !isRecording && styles.disabledButton]}
+                style={[styles.controlButton, styles.stopButton, (!isRecording || isPreBufferCustom || isPostBufferCustom) && styles.disabledButton]}
                 onPress={handleStopRecording}
-                disabled={!isRecording}>
+                disabled={!isRecording || isPreBufferCustom || isPostBufferCustom}>
                 <Text style={styles.buttonText}>■ Stop</Text>
               </TouchableOpacity>
             </View>
           ) : (
             <TouchableOpacity
-              style={[styles.captureButton, (isCapturing || segmentQueue.length * 3 < preBufferDuration) && styles.disabledButton]}
+              style={[styles.captureButton, (isCapturing || segmentQueue.length * 3 < preBufferDuration || isPreBufferCustom || isPostBufferCustom) && styles.disabledButton]}
               onPress={handleCircularCapture}
-              disabled={isCapturing || segmentQueue.length * 3 < preBufferDuration}>
+              disabled={isCapturing || segmentQueue.length * 3 < preBufferDuration || isPreBufferCustom || isPostBufferCustom}>
               <Text style={styles.captureButtonText}>
-                {segmentQueue.length * 3 < preBufferDuration
-                  ? 'Buffering...'
-                  : 'Capture'}
+                {isPreBufferCustom || isPostBufferCustom
+                  ? 'Enter Duration First'
+                  : segmentQueue.length * 3 < preBufferDuration
+                    ? 'Buffering...'
+                    : 'Capture'}
               </Text>
             </TouchableOpacity>
           )}
@@ -698,6 +880,46 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 22, fontWeight: '800', color: '#ffffff' },
   closeButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#2a2a3e', alignItems: 'center', justifyContent: 'center' },
   closeButtonText: { color: '#ffffff', fontSize: 24, fontWeight: 'bold' },
+  customInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    marginBottom: 12,
+    paddingHorizontal: 4,
+  },
+  customInputLabel: {
+    fontSize: 13,
+    color: '#e0e0e8',
+    fontWeight: '600',
+    flex: 1,
+  },
+  customInput: {
+    backgroundColor: '#2a2a3e',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+    width: 80,
+    textAlign: 'center',
+    borderWidth: 1,
+    borderColor: '#3b82f6',
+  },
+  customInputWarning: {
+    fontSize: 12,
+    color: '#f59e0b',
+    fontWeight: '700',
+    textAlign: 'center',
+    marginTop: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+  },
   videoPlayer: { flex: 1, backgroundColor: '#000000' },
 });
 
