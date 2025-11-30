@@ -288,32 +288,51 @@ function App(): React.JSX.Element {
     }
   };
 
-  // Save segments info (merge will be implemented later)
+  // Merge segments using native MediaMuxer
   const mergeAndSaveSegments = async (segments: string[]) => {
     if (segments.length === 0) {
-      Alert.alert('Error', 'No segments to save');
+      Alert.alert('Error', 'No segments to merge');
       return;
     }
 
     try {
-      console.log('=== SEGMENTS COLLECTED ===');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('.')[0];
+      const filename = `VID_${timestamp}.mp4`;
+      const outputPath = `${RNFS.ExternalStorageDirectoryPath}/Movies/${filename}`;
+
+      console.log('=== MERGING VIDEOS ===');
       console.log(`Total segments: ${segments.length}`);
-      console.log(`Total duration: ~${segments.length * 3}s`);
+      console.log(`Expected duration: ~${segments.length * 3}s`);
       console.log('Segment paths:');
       segments.forEach((path, index) => {
         console.log(`  ${index + 1}. ${path}`);
       });
-      console.log('========================');
+      console.log(`Output: ${outputPath}`);
+      console.log('=====================');
 
-      setRecordingStatus('Segments collected!');
+      // Call native merger
+      await VideoMerger.mergeVideos(segments, outputPath);
+
+      console.log('✅ Merge completed successfully!');
+
+      // Add to gallery
+      try {
+        await CameraRoll.save(`file://${outputPath}`, { type: 'video' });
+        console.log('✅ Video added to gallery');
+      } catch (err) {
+        console.warn('Failed to add to gallery:', err);
+      }
+
+      setRecordedVideoPath(outputPath);
+      setRecordingStatus('Video saved!');
       Alert.alert(
-        'Segments Collected',
-        `Pre-buffer + Post-buffer segments saved!\n\nTotal: ${segments.length} segments\nDuration: ~${segments.length * 3}s\n\nCheck console for paths.`
+        'Success! 🎉',
+        `Video merged and saved to gallery!\n\nSegments: ${segments.length}\nDuration: ~${segments.length * 3}s\n\nFile: ${filename}`
       );
     } catch (error: any) {
-      console.error('Error:', error);
-      setRecordingStatus('Error collecting segments');
-      Alert.alert('Error', `Failed: ${error.message || error}`);
+      console.error('❌ Merge error:', error);
+      setRecordingStatus('Error merging video');
+      Alert.alert('Error', `Failed to merge video:\n${error.message || error}`);
     }
   };
 
