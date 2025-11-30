@@ -135,12 +135,12 @@ function App(): React.JSX.Element {
           },
         });
 
-        // Stop after 1 second
+        // Stop after 3 seconds (1s was too short causing errors)
         setTimeout(async () => {
           if (camera.current && segmentRecordingRef.current) {
             await camera.current.stopRecording();
           }
-        }, 1000);
+        }, 3000);
       } catch (error) {
         console.error('Error starting segment:', error);
         segmentRecordingRef.current = false;
@@ -150,8 +150,8 @@ function App(): React.JSX.Element {
     // Record first segment
     recordSegment();
 
-    // Continue recording every 1.1s
-    bufferingInterval.current = setInterval(recordSegment, 1100);
+    // Continue recording every 3.1s
+    bufferingInterval.current = setInterval(recordSegment, 3100);
   };
 
   const stopContinuousBuffering = () => {
@@ -194,8 +194,8 @@ function App(): React.JSX.Element {
 
     const postBufferSegments: string[] = [];
 
-    // Record post-buffer segments (each segment = 1s)
-    const segmentsNeeded = postBufferDuration;
+    // Record post-buffer segments (each segment = 3s)
+    const segmentsNeeded = Math.ceil(postBufferDuration / 3);
     for (let i = 0; i < segmentsNeeded; i++) {
       await new Promise<void>((resolve) => {
         camera.current?.startRecording({
@@ -211,7 +211,7 @@ function App(): React.JSX.Element {
 
         setTimeout(async () => {
           await camera.current?.stopRecording();
-        }, 1000);
+        }, 3000);
       });
     }
 
@@ -473,7 +473,7 @@ function App(): React.JSX.Element {
                 </View>
               </View>
               <Text style={styles.durationInfo}>
-                Total: {preBufferDuration + postBufferDuration}s | Buffer: {segmentQueue.length}s/{preBufferDuration}s
+                Total: {preBufferDuration + postBufferDuration}s | Buffer: {segmentQueue.length * 3}s/{preBufferDuration}s
               </Text>
             </View>
           )}
@@ -528,11 +528,11 @@ function App(): React.JSX.Element {
             </View>
           ) : (
             <TouchableOpacity
-              style={[styles.captureButton, (isCapturing || segmentQueue.length < preBufferDuration) && styles.disabledButton]}
+              style={[styles.captureButton, (isCapturing || segmentQueue.length * 3 < preBufferDuration) && styles.disabledButton]}
               onPress={handleCircularCapture}
-              disabled={isCapturing || segmentQueue.length < preBufferDuration}>
+              disabled={isCapturing || segmentQueue.length * 3 < preBufferDuration}>
               <Text style={styles.captureButtonText}>
-                {segmentQueue.length < preBufferDuration
+                {segmentQueue.length * 3 < preBufferDuration
                   ? 'Buffering...'
                   : 'Capture'}
               </Text>
