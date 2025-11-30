@@ -1,6 +1,8 @@
 /**
- * Sample React Native App with Circular Buffer Recording
- * Simplified version without FFmpeg
+ * Sample React Native App
+ * https://github.com/facebook/react-native
+ *
+ * @format
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -15,7 +17,6 @@ import {
   PermissionsAndroid,
   Platform,
   Modal,
-  Switch,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -27,24 +28,15 @@ import {
 import Video from 'react-native-video';
 import RNFS from 'react-native-fs';
 import { CameraRoll } from '@react-native-camera-roll/camera-roll';
-import { Picker } from '@react-native-picker/picker';
 
 function App(): React.JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
-
   const [isRecording, setIsRecording] = useState(false);
   const [recordedVideoPath, setRecordedVideoPath] = useState<string | null>(null);
   const [recordingStatus, setRecordingStatus] = useState<string>('Ready to record');
   const [showPreview, setShowPreview] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-
-  // Circular buffer mode
-  const [bufferMode, setBufferMode] = useState(false);
-  const [preBufferDuration, setPreBufferDuration] = useState(5);
-  const [postBufferDuration, setPostBufferDuration] = useState(5);
-
   const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const autoStopTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const camera = useRef<Camera>(null);
   const device = useCameraDevice('back');
   const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } = useCameraPermission();
@@ -67,6 +59,7 @@ function App(): React.JSX.Element {
       await requestMicrophonePermission();
     }
 
+    // Request storage permissions for Android
     if (Platform.OS === 'android') {
       try {
         await PermissionsAndroid.requestMultiple([
@@ -79,55 +72,70 @@ function App(): React.JSX.Element {
     }
   };
 
+  // Callback: Recording Started
   const onRecordingStarted = () => {
-    console.log('Recording started');
+    console.log('Recording started callback triggered');
     setRecordingStatus('Recording in progress...');
     setIsRecording(true);
     setRecordingTime(0);
 
+    // Start timer
     timerInterval.current = setInterval(() => {
       setRecordingTime(prev => prev + 1);
     }, 1000);
   };
 
+  // Callback: Recording Stopped
   const onRecordingStopped = async (videoPath: string) => {
-    console.log('Recording stopped');
+    console.log('Recording stopped callback triggered');
+    console.log('Video saved at:', videoPath);
 
     try {
+      // Generate filename with timestamp and MP4 extension
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('.')[0];
       const filename = `VID_${timestamp}.mp4`;
+
+      // Use Movies directory for gallery visibility
       const destPath = `${RNFS.ExternalStorageDirectoryPath}/Movies/${filename}`;
 
+      // Move file from cache to Movies directory
       await RNFS.moveFile(videoPath, destPath);
+      console.log('Video moved to:', destPath);
 
+      // Add to Media Store so Gallery apps can see it
       try {
         await CameraRoll.save(`file://${destPath}`, { type: 'video' });
+        console.log('Video added to gallery');
       } catch (err) {
-        console.warn('Failed to add to gallery:', err);
+        console.warn('Failed to add to gallery, but file saved:', err);
       }
 
       setRecordingStatus('Recording saved successfully!');
       setRecordedVideoPath(destPath);
       Alert.alert('Success', `Video saved to Gallery: ${filename}`);
     } catch (error: any) {
-      console.error('Error saving:', error);
+      console.error('Error saving to gallery:', error);
       setRecordingStatus('Recording saved to cache only');
       setRecordedVideoPath(videoPath);
+      Alert.alert('Warning', 'Video saved but may not appear in Gallery');
     }
 
     setIsRecording(false);
 
+    // Stop timer
     if (timerInterval.current) {
       clearInterval(timerInterval.current);
       timerInterval.current = null;
     }
   };
 
+  // Callback: Recording Error
   const onRecordingError = (error: any) => {
-    console.error('Recording error:', error);
+    console.error('Recording error callback triggered:', error);
     setRecordingStatus(`Error: ${error.message}`);
     setIsRecording(false);
 
+    // Stop timer
     if (timerInterval.current) {
       clearInterval(timerInterval.current);
       timerInterval.current = null;
@@ -143,24 +151,20 @@ function App(): React.JSX.Element {
     }
 
     try {
+      // Trigger onRecordingStarted callback
       onRecordingStarted();
 
       camera.current.startRecording({
         onRecordingFinished: (video) => {
+          // Trigger onRecordingStopped callback
           onRecordingStopped(video.path);
+          Alert.alert('Success', `Video saved to: ${video.path}`);
         },
         onRecordingError: (error) => {
+          // Trigger onRecordingError callback
           onRecordingError(error);
         },
       });
-
-      // Auto-stop in buffer mode
-      if (bufferMode) {
-        const totalDuration = (preBufferDuration + postBufferDuration) * 1000;
-        autoStopTimeout.current = setTimeout(async () => {
-          await handleStopRecording();
-        }, totalDuration);
-      }
     } catch (error: any) {
       console.error('Start recording error:', error);
       onRecordingError(error);
@@ -168,11 +172,8 @@ function App(): React.JSX.Element {
   };
 
   const handleStopRecording = async () => {
-    if (!camera.current) return;
-
-    if (autoStopTimeout.current) {
-      clearTimeout(autoStopTimeout.current);
-      autoStopTimeout.current = null;
+    if (!camera.current) {
+      return;
     }
 
     try {
@@ -196,12 +197,14 @@ function App(): React.JSX.Element {
     setShowPreview(false);
   };
 
+  // Format time as MM:SS
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Show loading if permissions are not granted yet
   if (!hasCameraPermission || !hasMicrophonePermission) {
     return (
       <SafeAreaProvider>
@@ -217,6 +220,7 @@ function App(): React.JSX.Element {
     );
   }
 
+  // Show error if no camera device found
   if (!device) {
     return (
       <SafeAreaProvider>
@@ -242,61 +246,11 @@ function App(): React.JSX.Element {
           backgroundColor={backgroundStyle.backgroundColor}
         />
         <View style={styles.container}>
+          {/* Header */}
           <View style={styles.headerContainer}>
             <Text style={styles.header}>Video Recorder</Text>
             <Text style={styles.subtitle}>Professional Recording Studio</Text>
           </View>
-
-          {/* Buffer Mode Toggle */}
-          <View style={styles.bufferModeCard}>
-            <Text style={styles.bufferModeLabel}>Circular Buffer Mode</Text>
-            <Switch
-              value={bufferMode}
-              onValueChange={setBufferMode}
-              disabled={isRecording}
-              trackColor={{ false: '#2a2a3e', true: '#10b981' }}
-              thumbColor={bufferMode ? '#ffffff' : '#8b8b9a'}
-            />
-          </View>
-
-          {/* Duration Selectors */}
-          {bufferMode && (
-            <View style={styles.durationCard}>
-              <View style={styles.durationRow}>
-                <Text style={styles.durationLabel}>Pre-Buffer:</Text>
-                <View style={styles.pickerContainer}>
-                  <Picker
-                    selectedValue={preBufferDuration}
-                    onValueChange={setPreBufferDuration}
-                    style={styles.picker}
-                    dropdownIconColor="#ffffff"
-                    enabled={!isRecording}>
-                    <Picker.Item label="3s" value={3} />
-                    <Picker.Item label="5s" value={5} />
-                    <Picker.Item label="10s" value={10} />
-                  </Picker>
-                </View>
-              </View>
-              <View style={styles.durationRow}>
-                <Text style={styles.durationLabel}>Post-Buffer:</Text>
-                <View style={styles.pickerContainer}>
-                  <Picker
-                    selectedValue={postBufferDuration}
-                    onValueChange={setPostBufferDuration}
-                    style={styles.picker}
-                    dropdownIconColor="#ffffff"
-                    enabled={!isRecording}>
-                    <Picker.Item label="3s" value={3} />
-                    <Picker.Item label="5s" value={5} />
-                    <Picker.Item label="10s" value={10} />
-                  </Picker>
-                </View>
-              </View>
-              <Text style={styles.durationInfo}>
-                Total: {preBufferDuration + postBufferDuration}s (auto-stop)
-              </Text>
-            </View>
-          )}
 
           {/* Status Display */}
           <View style={styles.statusCard}>
@@ -304,7 +258,7 @@ function App(): React.JSX.Element {
             <Text style={styles.statusText}>{recordingStatus}</Text>
           </View>
 
-          {/* Camera Preview */}
+          {/* Camera Preview Area */}
           <View style={styles.previewCard}>
             <View style={styles.previewContainer}>
               <Camera
@@ -336,9 +290,7 @@ function App(): React.JSX.Element {
               disabled={isRecording}>
               <View style={styles.buttonContent}>
                 <Text style={styles.buttonIcon}>▶</Text>
-                <Text style={styles.buttonText}>
-                  {bufferMode ? `Record ${preBufferDuration + postBufferDuration}s` : 'Start'}
-                </Text>
+                <Text style={styles.buttonText}>Start</Text>
               </View>
             </TouchableOpacity>
 
@@ -404,7 +356,7 @@ const styles = StyleSheet.create({
   },
   headerContainer: {
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
     paddingTop: 8,
   },
   header: {
@@ -419,68 +371,21 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontWeight: '500',
   },
-  bufferModeCard: {
-    backgroundColor: '#1a1a2e',
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    borderRadius: 12,
-    marginBottom: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderWidth: 1,
-    borderColor: '#2a2a3e',
-  },
-  bufferModeLabel: {
-    fontSize: 16,
-    color: '#ffffff',
-    fontWeight: '600',
-  },
-  durationCard: {
-    backgroundColor: '#1a1a2e',
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#2a2a3e',
-  },
-  durationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  durationLabel: {
-    fontSize: 14,
-    color: '#e0e0e8',
-    fontWeight: '600',
-  },
-  durationInfo: {
-    fontSize: 12,
-    color: '#10b981',
-    fontWeight: '600',
-    textAlign: 'center',
-    marginTop: 4,
-  },
-  pickerContainer: {
-    backgroundColor: '#2a2a3e',
-    borderRadius: 8,
-    width: 100,
-  },
-  picker: {
-    color: '#ffffff',
-    height: 40,
-  },
   statusCard: {
     backgroundColor: '#1a1a2e',
-    paddingVertical: 12,
+    paddingVertical: 14,
     paddingHorizontal: 18,
-    borderRadius: 12,
-    marginBottom: 12,
+    borderRadius: 16,
+    marginBottom: 16,
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#2a2a3e',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
   },
   statusDot: {
     width: 10,
@@ -490,21 +395,26 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   statusText: {
-    fontSize: 14,
+    fontSize: 15,
     color: '#e0e0e8',
     fontWeight: '600',
     flex: 1,
   },
   previewCard: {
     flex: 1,
-    marginBottom: 12,
-    borderRadius: 16,
+    marginBottom: 16,
+    borderRadius: 20,
     backgroundColor: '#1a1a2e',
-    padding: 6,
+    padding: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 10,
   },
   previewContainer: {
     flex: 1,
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
     backgroundColor: '#000000',
   },
@@ -541,6 +451,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.6,
+    shadowRadius: 8,
+    elevation: 8,
   },
   recordingDot: {
     width: 10,
@@ -562,10 +477,15 @@ const styles = StyleSheet.create({
   },
   controlButton: {
     flex: 1,
-    paddingVertical: 16,
-    borderRadius: 12,
+    paddingVertical: 18,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
   },
   buttonContent: {
     flexDirection: 'row',
@@ -573,14 +493,15 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   buttonIcon: {
-    fontSize: 18,
+    fontSize: 20,
     color: '#ffffff',
     fontWeight: 'bold',
   },
   buttonText: {
     color: '#ffffff',
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '700',
+    letterSpacing: 0.5,
   },
   startButton: {
     backgroundColor: '#10b981',
@@ -593,23 +514,29 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   previewButton: {
-    backgroundColor: '#8b5cf6',
-    paddingVertical: 14,
-    borderRadius: 12,
+    backgroundColor: '#3b82f6',
+    paddingVertical: 16,
+    borderRadius: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 10,
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 6,
   },
   previewButtonIcon: {
-    fontSize: 16,
+    fontSize: 18,
     color: '#ffffff',
     fontWeight: 'bold',
   },
   previewButtonText: {
     color: '#ffffff',
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '700',
+    letterSpacing: 0.3,
   },
   modalContainer: {
     flex: 1,
@@ -628,6 +555,7 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '800',
     color: '#ffffff',
+    letterSpacing: 0.5,
   },
   closeButton: {
     width: 40,
