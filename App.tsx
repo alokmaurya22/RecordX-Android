@@ -135,12 +135,12 @@ function App(): React.JSX.Element {
           },
         });
 
-        // Stop after 1 second
+        // Stop after 2 seconds (1s too short, causes no-data error)
         setTimeout(async () => {
           if (camera.current && segmentRecordingRef.current) {
             await camera.current.stopRecording();
           }
-        }, 1000);
+        }, 2000);
       } catch (error) {
         console.error('Error starting segment:', error);
         segmentRecordingRef.current = false;
@@ -150,8 +150,8 @@ function App(): React.JSX.Element {
     // Record first segment
     recordSegment();
 
-    // Continue recording every 1.1s
-    bufferingInterval.current = setInterval(recordSegment, 1100);
+    // Continue recording every 2.1s
+    bufferingInterval.current = setInterval(recordSegment, 2100);
   };
 
   const stopContinuousBuffering = () => {
@@ -210,7 +210,7 @@ function App(): React.JSX.Element {
 
         setTimeout(async () => {
           await camera.current?.stopRecording();
-        }, 1000);
+        }, 2000);
       });
     }
 
@@ -436,11 +436,10 @@ function App(): React.JSX.Element {
                     onValueChange={(value) => setPreBufferDuration(value)}
                     style={styles.picker}
                     mode="dropdown"
-                    dropdownIconColor="#ffffff"
-                    enabled={!isBuffering && !isCapturing}>
-                    <Picker.Item label="3 seconds" value={3} color="#ffffff" />
-                    <Picker.Item label="5 seconds" value={5} color="#ffffff" />
-                    <Picker.Item label="10 seconds" value={10} color="#ffffff" />
+                    dropdownIconColor="#ffffff">
+                    <Picker.Item label="3 seconds" value={3} />
+                    <Picker.Item label="5 seconds" value={5} />
+                    <Picker.Item label="10 seconds" value={10} />
                   </Picker>
                 </View>
               </View>
@@ -452,11 +451,10 @@ function App(): React.JSX.Element {
                     onValueChange={(value) => setPostBufferDuration(value)}
                     style={styles.picker}
                     mode="dropdown"
-                    dropdownIconColor="#ffffff"
-                    enabled={!isBuffering && !isCapturing}>
-                    <Picker.Item label="3 seconds" value={3} color="#ffffff" />
-                    <Picker.Item label="5 seconds" value={5} color="#ffffff" />
-                    <Picker.Item label="10 seconds" value={10} color="#ffffff" />
+                    dropdownIconColor="#ffffff">
+                    <Picker.Item label="3 seconds" value={3} />
+                    <Picker.Item label="5 seconds" value={5} />
+                    <Picker.Item label="10 seconds" value={10} />
                   </Picker>
                 </View>
               </View>
@@ -589,8 +587,8 @@ const styles = StyleSheet.create({
   durationRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
   durationLabel: { fontSize: 14, color: '#e0e0e8', fontWeight: '600' },
   durationInfo: { fontSize: 12, color: '#10b981', fontWeight: '600', textAlign: 'center', marginTop: 4 },
-  pickerContainer: { backgroundColor: '#2a2a3e', borderRadius: 8, width: 100 },
-  picker: { color: '#ffffff', height: 40 },
+  pickerContainer: { backgroundColor: '#2a2a3e', borderRadius: 8, width: 150, minHeight: 50, justifyContent: 'center' },
+  picker: { color: '#ffffff', height: 50, width: 150 },
   statusCard: {
     backgroundColor: '#1a1a2e',
     paddingVertical: 12,
