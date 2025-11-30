@@ -36,7 +36,7 @@ function App(): React.JSX.Element {
   const [recordingStatus, setRecordingStatus] = useState<string>('Ready to record');
   const [showPreview, setShowPreview] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const timerInterval = useRef<NodeJS.Timeout | null>(null);
+  const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const camera = useRef<Camera>(null);
   const device = useCameraDevice('back');
   const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } = useCameraPermission();
