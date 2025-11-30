@@ -57,6 +57,7 @@ function App(): React.JSX.Element {
   const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const bufferingInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const segmentRecordingRef = useRef(false);
+  const isBufferingRef = useRef(false);
   const camera = useRef<Camera>(null);
   const device = useCameraDevice('back');
   const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } = useCameraPermission();
@@ -104,20 +105,30 @@ function App(): React.JSX.Element {
     }
   };
 
-  // Continuous buffering - records 1s segments in background
+  // Continuous buffering - records 3s segments in background
   const startContinuousBuffering = () => {
     console.log('Starting continuous buffering...');
     setIsBuffering(true);
+    isBufferingRef.current = true;
     setRecordingStatus(`Buffering ${preBufferDuration}s (background)...`);
 
     const recordSegment = async () => {
-      if (!camera.current || segmentRecordingRef.current || isCapturing) return;
+      // Check ref for immediate stop
+      if (!camera.current || !isBufferingRef.current || isCapturing) return;
+
+      if (segmentRecordingRef.current) {
+        console.log('Segment already recording, skipping...');
+        return;
+      }
 
       segmentRecordingRef.current = true;
 
       try {
-        camera.current.startRecording({
+        await camera.current.startRecording({
           onRecordingFinished: (video) => {
+            console.log('Segment finished:', video.path);
+            segmentRecordingRef.current = false;
+
             setSegmentQueue(prev => {
               const newQueue = [...prev, video.path];
               // Keep only last N seconds worth of segments (each segment = 3s)
@@ -131,18 +142,30 @@ function App(): React.JSX.Element {
               console.log(`Buffer: ${newQueue.length} segments (${newQueue.length * 3}s / ${preBufferDuration}s)`);
               return newQueue;
             });
-            segmentRecordingRef.current = false;
+
+            // Recursively record next segment if still buffering
+            if (isBufferingRef.current && !isCapturing) {
+              recordSegment();
+            }
           },
           onRecordingError: (error) => {
             console.error('Segment error:', error);
             segmentRecordingRef.current = false;
+            // Retry after delay if error
+            if (isBufferingRef.current && !isCapturing) {
+              setTimeout(recordSegment, 1000);
+            }
           },
         });
 
-        // Stop after 3 seconds (1s was too short causing errors)
+        // Stop after 3 seconds
         setTimeout(async () => {
           if (camera.current && segmentRecordingRef.current) {
-            await camera.current.stopRecording();
+            try {
+              await camera.current.stopRecording();
+            } catch (e) {
+              console.warn('Stop error:', e);
+            }
           }
         }, 3000);
       } catch (error) {
@@ -151,21 +174,14 @@ function App(): React.JSX.Element {
       }
     };
 
-    // Record first segment
+    // Start loop
     recordSegment();
-
-    // Continue recording every 3.1s
-    bufferingInterval.current = setInterval(recordSegment, 3100);
   };
 
   const stopContinuousBuffering = () => {
     console.log('Stopping buffering...');
     setIsBuffering(false);
-
-    if (bufferingInterval.current) {
-      clearInterval(bufferingInterval.current);
-      bufferingInterval.current = null;
-    }
+    isBufferingRef.current = false;
 
     // Clean up segments
     segmentQueue.forEach(path => {
@@ -183,7 +199,22 @@ function App(): React.JSX.Element {
     if (!camera.current || isCapturing) return;
 
     setIsCapturing(true);
-    stopContinuousBuffering();
+
+    // Stop buffering loop
+    isBufferingRef.current = false;
+    setIsBuffering(false);
+
+    // If currently recording a segment, stop it gracefully
+    if (segmentRecordingRef.current && camera.current) {
+      try {
+        await camera.current.stopRecording();
+        // Wait a bit for the callback to fire and clear the flag
+        await new Promise(r => setTimeout(r, 500));
+      } catch (e) {
+        console.warn('Error stopping pre-buffer segment:', e);
+      }
+      segmentRecordingRef.current = false;
+    }
 
     const preBufferSegments = [...segmentQueue];
     console.log(`Pre-buffer: ${preBufferSegments.length} segments`);
@@ -202,20 +233,27 @@ function App(): React.JSX.Element {
     const segmentsNeeded = Math.ceil(postBufferDuration / 3);
     for (let i = 0; i < segmentsNeeded; i++) {
       await new Promise<void>((resolve) => {
-        camera.current?.startRecording({
-          onRecordingFinished: (video) => {
-            postBufferSegments.push(video.path);
-            resolve();
-          },
-          onRecordingError: (error) => {
-            console.error('Post-buffer error:', error);
-            resolve();
-          },
-        });
+        // Add small delay between segments to avoid race conditions
+        setTimeout(() => {
+          camera.current?.startRecording({
+            onRecordingFinished: (video) => {
+              postBufferSegments.push(video.path);
+              resolve();
+            },
+            onRecordingError: (error) => {
+              console.error('Post-buffer error:', error);
+              resolve();
+            },
+          });
 
-        setTimeout(async () => {
-          await camera.current?.stopRecording();
-        }, 3000);
+          setTimeout(async () => {
+            try {
+              await camera.current?.stopRecording();
+            } catch (e) {
+              console.warn('Stop recording error:', e);
+            }
+          }, 3000);
+        }, 100); // Small delay to ensure previous recording is fully stopped
       });
     }
 
