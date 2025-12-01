@@ -131,9 +131,21 @@ function App(): React.JSX.Element {
       // Check ref for immediate stop
       if (!camera.current || !isBufferingRef.current || isCapturing) return;
 
+      // CRITICAL: Check if already recording
       if (segmentRecordingRef.current) {
-        console.log('Segment already recording, skipping...');
+        console.log('⚠️ Segment already recording, skipping...');
         return;
+      }
+
+      // Extra safety: Try to stop any stuck recording
+      try {
+        if (camera.current) {
+          // This will fail silently if not recording
+          await camera.current.stopRecording();
+          await new Promise<void>(resolve => setTimeout(resolve, 100));
+        }
+      } catch (e) {
+        // Expected if not recording, ignore
       }
 
       segmentRecordingRef.current = true;
@@ -175,9 +187,16 @@ function App(): React.JSX.Element {
             }
           },
           onRecordingError: (error) => {
+            // During capture, errors are expected (we force-stopped the segment)
+            if (isCapturingRef.current) {
+              console.log('⚠️ Segment error during capture (expected), ignoring');
+              segmentRecordingRef.current = false;
+              return;
+            }
+
             console.error('Segment error:', error);
             segmentRecordingRef.current = false;
-            // Retry after delay if error
+            // Retry after delay if error (only during buffering)
             if (isBufferingRef.current && !isCapturingRef.current) {
               setTimeout(recordSegment, 1000);
             }
@@ -204,10 +223,21 @@ function App(): React.JSX.Element {
     recordSegment();
   };
 
-  const stopContinuousBuffering = () => {
+  const stopContinuousBuffering = async () => {
     console.log('Stopping buffering...');
     setIsBuffering(false);
     isBufferingRef.current = false;
+
+    // Stop any active recording
+    if (segmentRecordingRef.current && camera.current) {
+      try {
+        await camera.current.stopRecording();
+        await new Promise<void>(resolve => setTimeout(resolve, 200));
+      } catch (e) {
+        // Ignore if not recording
+      }
+    }
+    segmentRecordingRef.current = false;
 
     // Clean up segments
     segmentQueue.forEach(path => {
@@ -317,65 +347,60 @@ function App(): React.JSX.Element {
       setRecordingTime(prev => prev + 1);
     }, 1000);
 
-    const postBufferSegments: string[] = [];
+    // Record post-buffer as SINGLE video (exact duration)
+    console.log(`📹 Recording ${postBufferDuration}s post-buffer (single video)...`);
 
-    // Record post-buffer segments sequentially (each segment = 3s)
-    const segmentsNeeded = Math.ceil(postBufferDuration / 3);
-    console.log(`📹 Recording ${segmentsNeeded} post-buffer segments...`);
+    const postBufferPath = await new Promise<string | null>((resolve) => {
+      if (!camera.current) {
+        console.error('❌ Camera not available');
+        resolve(null);
+        return;
+      }
 
-    for (let i = 0; i < segmentsNeeded; i++) {
-      console.log(`\n🔴 Recording post-buffer segment ${i + 1}/${segmentsNeeded}...`);
+      let recordingCompleted = false;
 
-      // Wait for segment to complete
-      await new Promise<void>((resolve) => {
-        if (!camera.current) {
-          console.error('❌ Camera not available');
-          resolve();
-          return;
-        }
+      try {
+        camera.current.startRecording({
+          onRecordingFinished: (video) => {
+            console.log(`✅ Post-buffer finished: ${video.path}`);
+            recordingCompleted = true;
+            resolve(video.path);
+          },
+          onRecordingError: (error) => {
+            console.error(`❌ Post-buffer error:`, error);
+            recordingCompleted = true;
+            resolve(null);
+          },
+        });
 
-        let recordingCompleted = false;
-
-        try {
-          camera.current.startRecording({
-            onRecordingFinished: (video) => {
-              console.log(`✅ Post-buffer segment ${i + 1} finished: ${video.path}`);
-              postBufferSegments.push(video.path);
-              recordingCompleted = true;
-              // Wait for file to be fully written
-              setTimeout(() => resolve(), 400);
-            },
-            onRecordingError: (error) => {
-              console.error(`❌ Post-buffer segment ${i + 1} error:`, error);
-              recordingCompleted = true;
-              resolve(); // Continue to next segment
-            },
-          });
-
-          // Stop recording after 3 seconds
-          setTimeout(async () => {
-            if (!recordingCompleted && camera.current) {
-              try {
-                console.log(`⏹️ Stopping post-buffer segment ${i + 1}...`);
-                await camera.current.stopRecording();
-              } catch (e) {
-                console.warn(`⚠️ Stop error for segment ${i + 1}:`, e);
-                if (!recordingCompleted) {
-                  resolve();
-                }
+        // Stop after exact duration (in milliseconds)
+        setTimeout(async () => {
+          if (!recordingCompleted && camera.current) {
+            try {
+              console.log(`⏹️ Stopping post-buffer after ${postBufferDuration}s...`);
+              await camera.current.stopRecording();
+            } catch (e) {
+              console.warn(`⚠️ Stop error:`, e);
+              if (!recordingCompleted) {
+                resolve(null);
               }
             }
-          }, 3000);
-        } catch (error) {
-          console.error(`❌ Failed to start segment ${i + 1}:`, error);
-          resolve();
-        }
-      });
+          }
+        }, postBufferDuration * 1000);
+      } catch (error) {
+        console.error(`❌ Failed to start post-buffer:`, error);
+        resolve(null);
+      }
+    });
 
-      console.log(`✔️ Post-buffer segment ${i + 1} complete`);
+    const postBufferSegments: string[] = [];
+    if (postBufferPath) {
+      postBufferSegments.push(postBufferPath);
+      console.log(`✅ Post-buffer complete: ${postBufferDuration}s`);
+    } else {
+      console.warn('⚠️ Post-buffer recording failed');
     }
 
-    console.log(`\n📹 Post-buffer complete: ${postBufferSegments.length} segments (${postBufferSegments.length * 3}s)`);
 
     // Stop timer
     if (timerInterval.current) {
