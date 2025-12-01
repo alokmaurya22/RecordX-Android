@@ -14,22 +14,38 @@ interface TelemetryDisplayProps {
 
 export const TelemetryDisplay: React.FC<TelemetryDisplayProps> = ({ visible, onToggle }) => {
     const [metrics, setMetrics] = useState<TelemetryMetrics | null>(null);
+    const [latency, setLatency] = useState<number | null>(null);
     const [expanded, setExpanded] = useState(true);
+    const [updateCount, setUpdateCount] = useState(0);
 
     useEffect(() => {
         if (!visible || !telemetryEmitter) return;
 
+        console.log('[TelemetryDisplay] Setting up listener...');
+
         const subscription = telemetryEmitter.addListener('TelemetryMetrics', (event: any) => {
             try {
                 const data = JSON.parse(event.data);
+                console.log('[TelemetryDisplay] Received data:', data);
                 setMetrics(data);
+                setUpdateCount(prev => prev + 1);
             } catch (error) {
                 console.error('[TelemetryDisplay] Failed to parse metrics:', error);
             }
         });
 
+        // Check for latency updates
+        const latencyInterval = setInterval(() => {
+            const logger = TelemetryLogger as any;
+            if (logger.latencyMetrics && logger.latencyMetrics.total_ms) {
+                setLatency(logger.latencyMetrics.total_ms);
+            }
+        }, 500);
+
         return () => {
+            console.log('[TelemetryDisplay] Removing listener...');
             subscription.remove();
+            clearInterval(latencyInterval);
         };
     }, [visible]);
 
@@ -47,12 +63,16 @@ export const TelemetryDisplay: React.FC<TelemetryDisplayProps> = ({ visible, onT
 
             await Share.share({
                 title: 'Telemetry Logs',
-                message: `Telemetry logs saved to:\n\nJSON: ${logPath}\n\nReport: ${reportPath}\n\nYou can access these files using a file manager app.`,
+                message: ` Telemetry Logs\n\nJSON: ${logPath}\n\nReport: ${reportPath}\n\nAccess via file manager in:\n/sdcard/Android/data/com.basicapp/files/telemetry/`,
             });
         } catch (error: any) {
             Alert.alert('Export Failed', error.message);
         }
     };
+
+    const cpuValue = metrics?.cpu_usage || 0;
+    const memValue = metrics?.memory?.app_total_mb || 0;
+    const gpuValue = metrics?.gpu_usage;
 
     return (
         <View style={styles.container}>
@@ -73,22 +93,46 @@ export const TelemetryDisplay: React.FC<TelemetryDisplayProps> = ({ visible, onT
                         <>
                             <View style={styles.metricRow}>
                                 <Text style={styles.label}>CPU:</Text>
-                                <Text style={styles.value}>{metrics.cpu_usage?.toFixed(1) || '0.0'}%</Text>
+                                <Text style={[styles.value, cpuValue === 0 && styles.warningValue]}>
+                                    {cpuValue === 0 ? 'N/A*' : `${cpuValue.toFixed(1)}%`}
+                                </Text>
                             </View>
                             <View style={styles.metricRow}>
                                 <Text style={styles.label}>Memory:</Text>
-                                <Text style={styles.value}>{metrics.memory?.app_total_mb?.toFixed(0) || '0'} MB</Text>
+                                <Text style={styles.value}>{memValue.toFixed(0)} MB</Text>
                             </View>
                             <View style={styles.metricRow}>
                                 <Text style={styles.label}>GPU:</Text>
-                                <Text style={styles.value}>
-                                    {metrics.gpu_usage !== null ? `${metrics.gpu_usage.toFixed(1)}%` : 'N/A'}
+                                <Text style={[styles.value, (gpuValue === null || gpuValue === undefined) && styles.warningValue]}>
+                                    {gpuValue !== null && gpuValue !== undefined ? `${gpuValue.toFixed(1)}%` : 'N/A*'}
                                 </Text>
                             </View>
+
+                            {latency !== null && (
+                                <View style={styles.metricRow}>
+                                    <Text style={styles.label}>Latency:</Text>
+                                    <Text style={[styles.value, styles.latencyValue]}>
+                                        {latency.toFixed(0)} ms
+                                    </Text>
+                                </View>
+                            )}
+
                             <View style={styles.separator} />
-                            <Text style={styles.timestamp}>
-                                {new Date(metrics.timestamp).toLocaleTimeString()}
-                            </Text>
+                            <View style={styles.statusRow}>
+                                <Text style={styles.timestamp}>
+                                    {new Date(metrics.timestamp).toLocaleTimeString()}
+                                </Text>
+                                <View style={styles.updateIndicator}>
+                                    <View style={styles.updateDot} />
+                                    <Text style={styles.updateText}>#{updateCount}</Text>
+                                </View>
+                            </View>
+
+                            {(cpuValue === 0 || gpuValue === null || gpuValue === undefined) && (
+                                <Text style={styles.noteText}>
+                                    * Device/Permission limitation
+                                </Text>
+                            )}
                         </>
                     ) : (
                         <Text style={styles.waitingText}>Waiting for data...</Text>
@@ -98,11 +142,11 @@ export const TelemetryDisplay: React.FC<TelemetryDisplayProps> = ({ visible, onT
                         style={styles.exportButton}
                         onPress={handleExportLogs}
                     >
-                        <Text style={styles.exportText}>📁 Export Session Logs</Text>
+                        <Text style={styles.exportText}>📁 Export Logs</Text>
                     </TouchableOpacity>
 
                     <Text style={styles.hint}>
-                        Real-time metrics • Auto-saved
+                        Real-time • Updates: {updateCount}
                     </Text>
                 </View>
             )}
@@ -115,76 +159,120 @@ const styles = StyleSheet.create({
         position: 'absolute',
         top: 100,
         right: 10,
-        backgroundColor: 'rgba(15, 15, 30, 0.95)',
+        backgroundColor: 'rgba(15, 15, 30, 0.98)',
         borderRadius: 12,
-        borderWidth: 1,
+        borderWidth: 2,
         borderColor: '#10b981',
-        minWidth: 220,
+        minWidth: 240,
         zIndex: 1000,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 8,
     },
     header: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: 12,
+        padding: 14,
+        backgroundColor: 'rgba(16, 185, 129, 0.1)',
     },
     title: {
         color: '#10b981',
-        fontSize: 14,
-        fontWeight: '600',
+        fontSize: 15,
+        fontWeight: '700',
     },
     closeButton: {
         padding: 4,
     },
     closeText: {
         color: '#8b8b9a',
-        fontSize: 16,
+        fontSize: 18,
         fontWeight: 'bold',
     },
     content: {
-        padding: 12,
-        paddingTop: 0,
+        padding: 14,
+        paddingTop: 12,
     },
     metricRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        marginBottom: 8,
-        paddingVertical: 4,
+        alignItems: 'center',
+        marginBottom: 10,
+        paddingVertical: 6,
+        paddingHorizontal: 8,
+        backgroundColor: 'rgba(42, 42, 62, 0.5)',
+        borderRadius: 6,
     },
     label: {
-        color: '#8b8b9a',
+        color: '#e0e0e8',
         fontSize: 13,
-        fontWeight: '500',
+        fontWeight: '600',
     },
     value: {
         color: '#10b981',
-        fontSize: 14,
+        fontSize: 15,
         fontWeight: '700',
+    },
+    warningValue: {
+        color: '#f59e0b',
+    },
+    latencyValue: {
+        color: '#3b82f6',
     },
     separator: {
         height: 1,
         backgroundColor: '#2a2a3e',
-        marginVertical: 8,
+        marginVertical: 10,
+    },
+    statusRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 8,
     },
     timestamp: {
         color: '#8b8b9a',
+        fontSize: 11,
+        fontStyle: 'italic',
+    },
+    updateIndicator: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    updateDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+        backgroundColor: '#10b981',
+    },
+    updateText: {
+        color: '#8b8b9a',
+        fontSize: 10,
+        fontWeight: '600',
+    },
+    noteText: {
+        color: '#f59e0b',
         fontSize: 10,
         textAlign: 'center',
-        marginBottom: 12,
+        marginTop: 4,
+        marginBottom: 8,
         fontStyle: 'italic',
     },
     waitingText: {
         color: '#8b8b9a',
-        fontSize: 12,
+        fontSize: 13,
         textAlign: 'center',
-        marginVertical: 16,
+        marginVertical: 20,
         fontStyle: 'italic',
     },
     exportButton: {
         backgroundColor: '#3b82f6',
-        padding: 10,
+        padding: 12,
         borderRadius: 8,
-        marginTop: 8,
+        marginTop: 12,
         alignItems: 'center',
     },
     exportText: {
@@ -195,7 +283,7 @@ const styles = StyleSheet.create({
     hint: {
         color: '#8b8b9a',
         fontSize: 10,
-        marginTop: 8,
+        marginTop: 10,
         textAlign: 'center',
         fontStyle: 'italic',
     },

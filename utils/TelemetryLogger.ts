@@ -258,7 +258,7 @@ class TelemetryLogger {
     private generateMarkdownReport(report: TelemetryReport): string {
         const duration = this.formatDuration(report.duration_seconds);
 
-        let md = `# 📊 Telemetry Performance Report\n\n`;
+        let md = `#  Telemetry Performance Report\n\n`;
         md += `**Session:** ${report.session_id}  \n`;
         md += `**Date:** ${new Date(report.start_time).toLocaleString()}  \n`;
         md += `**Duration:** ${duration}  \n\n`;
