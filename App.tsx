@@ -33,8 +33,13 @@ import Video from 'react-native-video';
 import RNFS from 'react-native-fs';
 import { CameraRoll } from '@react-native-camera-roll/camera-roll';
 import { Picker } from '@react-native-picker/picker';
+import TelemetryLogger from './utils/TelemetryLogger';
+import { TelemetryDisplay } from './components/TelemetryDisplay';
 
 const { VideoMerger } = NativeModules;
+
+// Feature flag for telemetry (enable in development)
+const ENABLE_TELEMETRY = __DEV__;
 
 function App(): React.JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
@@ -61,6 +66,10 @@ function App(): React.JSX.Element {
   const [isPostBufferCustom, setIsPostBufferCustom] = useState(false);
   const [preBufferInput, setPreBufferInput] = useState('');
   const [postBufferInput, setPostBufferInput] = useState('');
+
+  // Telemetry state
+  const [showTelemetry, setShowTelemetry] = useState(false);
+  const [telemetryActive, setTelemetryActive] = useState(false);
 
   const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const bufferingInterval = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -309,6 +318,18 @@ function App(): React.JSX.Element {
 
     console.log('🎬 ===== CAPTURE STARTED =====');
 
+    // Start telemetry if enabled and not already active
+    if (ENABLE_TELEMETRY && !telemetryActive) {
+      const sessionId = `session_${new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('.')[0]}`;
+      await TelemetryLogger.start(sessionId);
+      setTelemetryActive(true);
+    }
+
+    // Record latency start
+    if (ENABLE_TELEMETRY) {
+      TelemetryLogger.recordLatencyStart();
+    }
+
     // Set both state and ref immediately
     setIsCapturing(true);
     isCapturingRef.current = true;
@@ -534,9 +555,27 @@ function App(): React.JSX.Element {
     }
 
     try {
+      // Start telemetry if enabled
+      if (ENABLE_TELEMETRY && !telemetryActive) {
+        const sessionId = `session_${new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('.')[0]}`;
+        await TelemetryLogger.start(sessionId);
+        setTelemetryActive(true);
+      }
+
+      // Record latency start
+      if (ENABLE_TELEMETRY) {
+        TelemetryLogger.recordLatencyStart();
+      }
+
       onRecordingStarted();
       camera.current.startRecording({
-        onRecordingFinished: (video) => onRecordingStopped(video.path),
+        onRecordingFinished: (video) => {
+          // Record latency callback
+          if (ENABLE_TELEMETRY) {
+            TelemetryLogger.recordLatencyCallback();
+          }
+          onRecordingStopped(video.path);
+        },
         onRecordingError: (error) => {
           console.error('Recording error:', error);
           setIsRecording(false);
@@ -615,6 +654,19 @@ function App(): React.JSX.Element {
             <Text style={styles.header}>Video Recorder</Text>
             <Text style={styles.subtitle}>Circular Buffer Recording • Tap to Reset</Text>
           </TouchableOpacity>
+
+          {/* Telemetry Toggle Button */}
+          {ENABLE_TELEMETRY && (
+            <TouchableOpacity
+              style={styles.telemetryToggleButton}
+              onPress={() => setShowTelemetry(!showTelemetry)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.telemetryToggleText}>
+                {showTelemetry ? 'Hide' : 'Show'} Telemetry
+              </Text>
+            </TouchableOpacity>
+          )}
 
           {/* Buffer Mode Toggle */}
           <View style={styles.bufferModeCard}>
@@ -851,6 +903,14 @@ function App(): React.JSX.Element {
             )}
           </View>
         </Modal>
+
+        {/* Telemetry Display Overlay */}
+        {ENABLE_TELEMETRY && (
+          <TelemetryDisplay
+            visible={showTelemetry}
+            onToggle={() => setShowTelemetry(!showTelemetry)}
+          />
+        )}
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -983,12 +1043,21 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textAlign: 'center',
     marginTop: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
-    borderRadius: 8,
+  },
+  telemetryToggleButton: {
+    backgroundColor: '#1a1a2e',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderColor: '#10b981',
+    alignItems: 'center',
+  },
+  telemetryToggleText: {
+    color: '#10b981',
+    fontSize: 14,
+    fontWeight: '700',
   },
   videoPlayer: { flex: 1, backgroundColor: '#000000' },
 });
