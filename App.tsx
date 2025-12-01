@@ -38,8 +38,8 @@ import { TelemetryDisplay } from './components/TelemetryDisplay';
 
 const { VideoMerger } = NativeModules;
 
-// Feature flag for telemetry (enable in development)
-const ENABLE_TELEMETRY = __DEV__;
+// Feature flag for telemetry (enabled for testing)
+const ENABLE_TELEMETRY = true; // Change to __DEV__ for production
 
 function App(): React.JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';

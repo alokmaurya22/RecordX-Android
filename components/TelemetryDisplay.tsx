@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Share } from 'react-native';
+import { NativeModules, NativeEventEmitter } from 'react-native';
 import TelemetryLogger from '../utils/TelemetryLogger';
 import type { TelemetryMetrics } from '../types/telemetry';
+
+const { TelemetryModule } = NativeModules;
+const telemetryEmitter = TelemetryModule ? new NativeEventEmitter(TelemetryModule) : null;
 
 interface TelemetryDisplayProps {
     visible: boolean;
@@ -10,19 +14,44 @@ interface TelemetryDisplayProps {
 
 export const TelemetryDisplay: React.FC<TelemetryDisplayProps> = ({ visible, onToggle }) => {
     const [metrics, setMetrics] = useState<TelemetryMetrics | null>(null);
-    const [expanded, setExpanded] = useState(false);
+    const [expanded, setExpanded] = useState(true);
+
+    useEffect(() => {
+        if (!visible || !telemetryEmitter) return;
+
+        const subscription = telemetryEmitter.addListener('TelemetryMetrics', (event: any) => {
+            try {
+                const data = JSON.parse(event.data);
+                setMetrics(data);
+            } catch (error) {
+                console.error('[TelemetryDisplay] Failed to parse metrics:', error);
+            }
+        });
+
+        return () => {
+            subscription.remove();
+        };
+    }, [visible]);
 
     if (!visible) return null;
 
-    const handleExportLogs = () => {
-        const logPath = TelemetryLogger.getLogFilePath();
-        const reportPath = TelemetryLogger.getReportFilePath();
+    const handleExportLogs = async () => {
+        try {
+            const logPath = TelemetryLogger.getLogFilePath();
+            const reportPath = TelemetryLogger.getReportFilePath();
 
-        Alert.alert(
-            'Telemetry Logs',
-            `Logs saved to:\n\nJSON: ${logPath}\n\nReport: ${reportPath}\n\nUse ADB to pull files:\nadb pull ${logPath}`,
-            [{ text: 'OK' }]
-        );
+            if (!logPath || !reportPath) {
+                Alert.alert('No Logs', 'No telemetry logs found. Start recording first!');
+                return;
+            }
+
+            await Share.share({
+                title: 'Telemetry Logs',
+                message: `Telemetry logs saved to:\n\nJSON: ${logPath}\n\nReport: ${reportPath}\n\nYou can access these files using a file manager app.`,
+            });
+        } catch (error: any) {
+            Alert.alert('Export Failed', error.message);
+        }
     };
 
     return (
@@ -32,7 +61,7 @@ export const TelemetryDisplay: React.FC<TelemetryDisplayProps> = ({ visible, onT
                 onPress={() => setExpanded(!expanded)}
                 activeOpacity={0.7}
             >
-                <Text style={styles.title}> Telemetry {expanded ? '▼' : '▶'}</Text>
+                <Text style={styles.title}>📊 Telemetry {expanded ? '▼' : '▶'}</Text>
                 <TouchableOpacity onPress={onToggle} style={styles.closeButton}>
                     <Text style={styles.closeText}>✕</Text>
                 </TouchableOpacity>
@@ -40,28 +69,40 @@ export const TelemetryDisplay: React.FC<TelemetryDisplayProps> = ({ visible, onT
 
             {expanded && (
                 <View style={styles.content}>
-                    <View style={styles.metricRow}>
-                        <Text style={styles.label}>CPU:</Text>
-                        <Text style={styles.value}>Monitoring...</Text>
-                    </View>
-                    <View style={styles.metricRow}>
-                        <Text style={styles.label}>MEM:</Text>
-                        <Text style={styles.value}>Monitoring...</Text>
-                    </View>
-                    <View style={styles.metricRow}>
-                        <Text style={styles.label}>GPU:</Text>
-                        <Text style={styles.value}>Monitoring...</Text>
-                    </View>
+                    {metrics ? (
+                        <>
+                            <View style={styles.metricRow}>
+                                <Text style={styles.label}>CPU:</Text>
+                                <Text style={styles.value}>{metrics.cpu_usage?.toFixed(1) || '0.0'}%</Text>
+                            </View>
+                            <View style={styles.metricRow}>
+                                <Text style={styles.label}>Memory:</Text>
+                                <Text style={styles.value}>{metrics.memory?.app_total_mb?.toFixed(0) || '0'} MB</Text>
+                            </View>
+                            <View style={styles.metricRow}>
+                                <Text style={styles.label}>GPU:</Text>
+                                <Text style={styles.value}>
+                                    {metrics.gpu_usage !== null ? `${metrics.gpu_usage.toFixed(1)}%` : 'N/A'}
+                                </Text>
+                            </View>
+                            <View style={styles.separator} />
+                            <Text style={styles.timestamp}>
+                                {new Date(metrics.timestamp).toLocaleTimeString()}
+                            </Text>
+                        </>
+                    ) : (
+                        <Text style={styles.waitingText}>Waiting for data...</Text>
+                    )}
 
                     <TouchableOpacity
                         style={styles.exportButton}
                         onPress={handleExportLogs}
                     >
-                        <Text style={styles.exportText}>Export Logs</Text>
+                        <Text style={styles.exportText}>📁 Export Session Logs</Text>
                     </TouchableOpacity>
 
                     <Text style={styles.hint}>
-                        Check console for real-time metrics
+                        Real-time metrics • Auto-saved
                     </Text>
                 </View>
             )}
@@ -78,7 +119,7 @@ const styles = StyleSheet.create({
         borderRadius: 12,
         borderWidth: 1,
         borderColor: '#10b981',
-        minWidth: 200,
+        minWidth: 220,
         zIndex: 1000,
     },
     header: {
@@ -108,27 +149,48 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         justifyContent: 'space-between',
         marginBottom: 8,
+        paddingVertical: 4,
     },
     label: {
         color: '#8b8b9a',
-        fontSize: 12,
+        fontSize: 13,
+        fontWeight: '500',
     },
     value: {
-        color: '#ffffff',
+        color: '#10b981',
+        fontSize: 14,
+        fontWeight: '700',
+    },
+    separator: {
+        height: 1,
+        backgroundColor: '#2a2a3e',
+        marginVertical: 8,
+    },
+    timestamp: {
+        color: '#8b8b9a',
+        fontSize: 10,
+        textAlign: 'center',
+        marginBottom: 12,
+        fontStyle: 'italic',
+    },
+    waitingText: {
+        color: '#8b8b9a',
         fontSize: 12,
-        fontWeight: '600',
+        textAlign: 'center',
+        marginVertical: 16,
+        fontStyle: 'italic',
     },
     exportButton: {
-        backgroundColor: '#10b981',
-        padding: 8,
-        borderRadius: 6,
+        backgroundColor: '#3b82f6',
+        padding: 10,
+        borderRadius: 8,
         marginTop: 8,
         alignItems: 'center',
     },
     exportText: {
         color: '#ffffff',
-        fontSize: 12,
-        fontWeight: '600',
+        fontSize: 13,
+        fontWeight: '700',
     },
     hint: {
         color: '#8b8b9a',
