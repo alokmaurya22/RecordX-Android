@@ -650,13 +650,7 @@ function App(): React.JSX.Element {
                       if (num && num >= 1 && num <= 60) {
                         setPreBufferDuration(num);
                         setIsPreBufferCustom(false);
-
-                        // Restart buffering if buffer mode is on
-                        if (bufferMode && !isBuffering && !isCapturing) {
-                          setTimeout(() => {
-                            startContinuousBuffering();
-                          }, 100);
-                        }
+                        // Duration updated - buffering continues with new target
                       } else {
                         Alert.alert('Invalid Input', 'Please enter a number between 1 and 60');
                       }
@@ -714,13 +708,7 @@ function App(): React.JSX.Element {
                       if (num && num >= 1 && num <= 60) {
                         setPostBufferDuration(num);
                         setIsPostBufferCustom(false);
-
-                        // Restart buffering if buffer mode is on and not already buffering
-                        if (bufferMode && !isBuffering && !isCapturing) {
-                          setTimeout(() => {
-                            startContinuousBuffering();
-                          }, 100);
-                        }
+                        // Duration updated - no need to restart buffering
                       } else {
                         Alert.alert('Invalid Input', 'Please enter a number between 1 and 60');
                       }
